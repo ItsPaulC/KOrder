@@ -1,0 +1,22 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "KThread.Producer", "KThread.Producer\KThread.Producer.csproj", "{0760E1C2-0A46-4B2F-AC45-9244F895C353}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "KThread.Consumer", "KThread.Consumer\KThread.Consumer.csproj", "{0B253C6C-0AFC-4884-90F8-E002AC369235}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{0760E1C2-0A46-4B2F-AC45-9244F895C353}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{0760E1C2-0A46-4B2F-AC45-9244F895C353}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{0760E1C2-0A46-4B2F-AC45-9244F895C353}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{0760E1C2-0A46-4B2F-AC45-9244F895C353}.Release|Any CPU.Build.0 = Release|Any CPU
+		{0B253C6C-0AFC-4884-90F8-E002AC369235}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{0B253C6C-0AFC-4884-90F8-E002AC369235}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{0B253C6C-0AFC-4884-90F8-E002AC369235}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{0B253C6C-0AFC-4884-90F8-E002AC369235}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal
