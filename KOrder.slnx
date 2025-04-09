@@ -1,4 +1,4 @@
 ﻿<Solution>
-  <Project Path="KThread.Consumer\KThread.Consumer.csproj" Type="Classic C#" />
-  <Project Path="KThread.Producer\KThread.Producer.csproj" Type="Classic C#" />
+  <Project Path="KOrder.Consumer\KOrder.Consumer.csproj" Type="Classic C#" />
+  <Project Path="KOrder.Producer\KOrder.Producer.csproj" Type="Classic C#" />
 </Solution>

@@ -1,6 +1,6 @@
 using Confluent.Kafka;
 
-namespace KThread.Producer;
+namespace KOrder.Producer;
 
 public class KafkaProducer : IDisposable
 {
