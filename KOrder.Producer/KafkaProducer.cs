@@ -49,7 +49,7 @@ public class KafkaProducer : IDisposable
         }
         catch (ProduceException<string, string> ex)
         {
-            Console.Error.WriteLine($"Failed to deliver message: {ex.Error.Reason}");
+            await Console.Error.WriteLineAsync($"Failed to deliver message: {ex.Error.Reason}");
             throw;
         }
     }
