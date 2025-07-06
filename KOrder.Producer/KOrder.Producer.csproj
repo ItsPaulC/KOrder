@@ -8,7 +8,17 @@
     </PropertyGroup>
 
     <ItemGroup>
-        <PackageReference Include="Confluent.Kafka" Version="2.8.0"/>
+        <PackageReference Include="Confluent.Kafka" Version="2.8.0" />
+        <PackageReference Include="Google.Protobuf" Version="3.31.1" />
+        <PackageReference Include="Grpc.Tools" Version="2.72.0">
+          <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+          <PrivateAssets>all</PrivateAssets>
+        </PackageReference>
+        <PackageReference Include="librdkafka.redist" Version="2.11.0" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <Protobuf Include="..\Protos\order.proto" GrpcServices="None" />
     </ItemGroup>
 
 </Project>
