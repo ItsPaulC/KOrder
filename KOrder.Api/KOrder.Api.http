@@ -1,0 +1,31 @@
+### KOrder API - Producer Demo Endpoint Tests
+
+# Test the Producer Demo endpoint
+GET http://localhost:5000/Producer/Demo
+Accept: application/json
+
+###
+
+# Test with HTTPS (if available)
+GET https://localhost:7000/Producer/Demo
+Accept: application/json
+
+###
+
+# Test with explicit headers
+GET http://localhost:5000/Producer/Demo
+Accept: application/json
+User-Agent: VS Code REST Client
+
+###
+
+# Health check - test if API is running
+GET http://localhost:5000/
+Accept: application/json
+
+###
+
+# Swagger endpoint
+GET http://localhost:5000/swagger/index.html
+
+###

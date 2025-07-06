@@ -4,23 +4,21 @@ using Google.Protobuf;
 
 namespace KOrder.Producer;
 
-public class KafkaProducer : IDisposable
+public class KafkaProducer : IDisposable, IKafkaProducer
 {
-    private readonly string _bootstrapServers;
-    private readonly string _topic;
+    private readonly KafkaProducerConfig _config;
     private readonly IProducer<string, byte[]> _producer;
 
-    public KafkaProducer(string bootstrapServers, string topic)
+    public KafkaProducer(KafkaProducerConfig config)
     {
-        _bootstrapServers = bootstrapServers;
-        _topic = topic;
+        _config = config;
 
         // Create topic if it doesn't exist
-        EnsureTopicExistsAsync(bootstrapServers, topic).GetAwaiter().GetResult();
+        EnsureTopicExistsAsync(_config.BootstrapServers, _config.Topic).GetAwaiter().GetResult();
 
-        ProducerConfig config = new()
+        ProducerConfig producerConfig = new()
         {
-            BootstrapServers = _bootstrapServers,
+            BootstrapServers = _config.BootstrapServers,
             // Idempotence ensures that messages are delivered exactly once
             EnableIdempotence = true,
             // Set acknowledgment level to wait for the leader and all replicas
@@ -30,7 +28,7 @@ public class KafkaProducer : IDisposable
             RetryBackoffMs = 1000
         };
 
-        _producer = new ProducerBuilder<string, byte[]>(config).Build();
+        _producer = new ProducerBuilder<string, byte[]>(producerConfig).Build();
     }
 
     /// <summary>
@@ -50,7 +48,7 @@ public class KafkaProducer : IDisposable
                 Value = value.ToByteArray()
             };
 
-            return await _producer.ProduceAsync(_topic, message, cancellationToken);
+            return await _producer.ProduceAsync(_config.Topic, message, cancellationToken);
         }
         catch (ProduceException<string, byte[]> ex)
         {
