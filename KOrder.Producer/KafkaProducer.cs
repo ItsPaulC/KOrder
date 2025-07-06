@@ -9,16 +9,16 @@ public class KafkaProducer : IDisposable
     private readonly string _bootstrapServers;
     private readonly string _topic;
     private readonly IProducer<string, byte[]> _producer;
-    
+
     public KafkaProducer(string bootstrapServers, string topic)
     {
         _bootstrapServers = bootstrapServers;
         _topic = topic;
-        
+
         // Create topic if it doesn't exist
         EnsureTopicExistsAsync(bootstrapServers, topic).GetAwaiter().GetResult();
-        
-        var config = new ProducerConfig
+
+        ProducerConfig config = new()
         {
             BootstrapServers = _bootstrapServers,
             // Idempotence ensures that messages are delivered exactly once
@@ -29,10 +29,10 @@ public class KafkaProducer : IDisposable
             MessageSendMaxRetries = 3,
             RetryBackoffMs = 1000
         };
-        
+
         _producer = new ProducerBuilder<string, byte[]>(config).Build();
     }
-    
+
     /// <summary>
     /// Produces a message to Kafka with the specified key and value
     /// </summary>
@@ -44,12 +44,12 @@ public class KafkaProducer : IDisposable
     {
         try
         {
-            var message = new Message<string, byte[]>
+            Message<string, byte[]> message = new()
             {
                 Key = key,
                 Value = value.ToByteArray()
             };
-            
+
             return await _producer.ProduceAsync(_topic, message, cancellationToken);
         }
         catch (ProduceException<string, byte[]> ex)
@@ -58,7 +58,7 @@ public class KafkaProducer : IDisposable
             throw;
         }
     }
-    
+
     /// <summary>
     /// Produces a batch of messages with the same key to maintain ordering
     /// </summary>
@@ -72,29 +72,29 @@ public class KafkaProducer : IDisposable
             await ProduceAsync(key, message, cancellationToken);
         }
     }
-    
+
     /// <summary>
     /// Produces messages for multiple keys, useful for testing the KeyedConsumer
     /// </summary>
     /// <param name="keyedMessages">Dictionary where keys are message keys and values are lists of message content</param>
     /// <param name="cancellationToken">Optional cancellation token</param>
     public async Task ProduceMultiKeyBatchAsync(
-        Dictionary<string, List<Order>> keyedMessages, 
+        Dictionary<string, List<Order>> keyedMessages,
         CancellationToken cancellationToken = default)
     {
-        var tasks = new List<Task>();
-        
-        foreach (var kvp in keyedMessages)
+        List<Task> tasks = [];
+
+        foreach (KeyValuePair<string, List<Order>> kvp in keyedMessages)
         {
-            var key = kvp.Key;
-            var messages = kvp.Value;
-            
+            string key = kvp.Key;
+            List<Order> messages = kvp.Value;
+
             tasks.Add(ProduceBatchAsync(key, messages, cancellationToken));
         }
-        
+
         await Task.WhenAll(tasks);
     }
-    
+
     /// <summary>
     /// Ensures that the specified topic exists, creating it if necessary
     /// </summary>
@@ -104,35 +104,35 @@ public class KafkaProducer : IDisposable
     /// <param name="replicationFactor">Replication factor for the topic (default: 1)</param>
     /// <returns>A task representing the asynchronous operation</returns>
     private static async Task EnsureTopicExistsAsync(
-        string bootstrapServers, 
-        string topicName, 
-        int numPartitions = 3, 
+        string bootstrapServers,
+        string topicName,
+        int numPartitions = 3,
         short replicationFactor = 1)
     {
-        var adminConfig = new AdminClientConfig
+        AdminClientConfig adminConfig = new()
         {
             BootstrapServers = bootstrapServers
         };
 
-        using var adminClient = new AdminClientBuilder(adminConfig).Build();
-        
+        using IAdminClient adminClient = new AdminClientBuilder(adminConfig).Build();
+
         try
         {
             // Check if topic already exists
-            var metadata = adminClient.GetMetadata(TimeSpan.FromSeconds(10));
+            Metadata metadata = adminClient.GetMetadata(TimeSpan.FromSeconds(10));
             bool topicExists = metadata.Topics.Any(t => t.Topic == topicName);
-            
+
             if (!topicExists)
             {
                 Console.WriteLine($"Topic '{topicName}' does not exist. Creating it...");
-                
-                var topicSpec = new TopicSpecification
+
+                TopicSpecification topicSpec = new()
                 {
                     Name = topicName,
                     NumPartitions = numPartitions,
                     ReplicationFactor = replicationFactor
                 };
-                
+
                 await adminClient.CreateTopicsAsync(new[] { topicSpec });
                 Console.WriteLine($"Topic '{topicName}' created successfully with {numPartitions} partitions and replication factor {replicationFactor}.");
             }

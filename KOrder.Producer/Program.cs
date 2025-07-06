@@ -56,7 +56,7 @@ async Task SendSingleMessage(KafkaProducer kafkaProducer)
 {
     Console.Write("Enter key: ");
     var key = Console.ReadLine() ?? "default-key";
-    
+
     Console.Write("Enter status: ");
     var status = Console.ReadLine() ?? "default-status";
     var order = new Order { Status = status };
@@ -69,7 +69,7 @@ async Task SendBatchWithSameKey(KafkaProducer kafkaProducer)
 {
     Console.Write("Enter key: ");
     var key = Console.ReadLine() ?? "default-key";
-    
+
     Console.Write("Enter number of messages to send: ");
     if (!int.TryParse(Console.ReadLine(), out var count))
     {
@@ -97,12 +97,12 @@ async Task SendMultiKeyBatch(KafkaProducer kafkaProducer)
     }
 
     var keyedMessages = new Dictionary<string, List<Order>>();
-    
+
     for (var k = 0; k < keyCount; k++)
     {
         Console.Write($"Enter key {k + 1}: ");
         var key = Console.ReadLine() ?? $"key-{k + 1}";
-        
+
         Console.Write($"Enter number of messages for key {key}: ");
         if (!int.TryParse(Console.ReadLine(), out var messageCount))
         {
@@ -116,7 +116,7 @@ async Task SendMultiKeyBatch(KafkaProducer kafkaProducer)
             var status = Console.ReadLine() ?? $"Order {i + 1} for key {key}";
             messages.Add(new Order { Status = status });
         }
-        
+
         keyedMessages[key] = messages;
     }
 
@@ -128,7 +128,7 @@ async Task RunDemo(KafkaProducer kafkaProducer)
 {
     Console.WriteLine("Running demo with predefined messages...");
     Console.WriteLine("This demo will send messages for 3 customers concurrently to test ordering preservation per key.");
-    
+
     // Create sample data with multiple keys
     var keyedMessages = new Dictionary<string, List<Order>>
     {

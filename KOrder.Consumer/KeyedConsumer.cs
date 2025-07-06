@@ -86,7 +86,7 @@ public class KeyedConsumer
                     // Simulate processing the message
                     var order = Order.Parser.ParseFrom(message.Message.Value);
                     Console.WriteLine($"Processing message with key '{key}': {order.Status} (Partition: {message.Partition.Value}, Offset: {message.Offset.Value})");
-                    
+
                     // Simulate some work - this ensures messages are processed one at a time per key
                     await Task.Delay(100, _cts.Token);
                 }
