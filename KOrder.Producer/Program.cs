@@ -6,7 +6,7 @@ const string bootstrapServers = "localhost:9092";
 const string topic = "keyed-messages-topic";
 
 // Create the producer
-using var producer = new KafkaProducer(bootstrapServers, topic);
+using var producer = new KafkaProducer(new KafkaProducerConfig{BootstrapServers = bootstrapServers, Topic = topic});
 
 Console.WriteLine("Kafka Producer started. Press Ctrl+C to exit.");
 Console.WriteLine($"Connected to: {bootstrapServers}");
@@ -88,7 +88,7 @@ async Task SendBatchWithSameKey(KafkaProducer kafkaProducer)
     Console.WriteLine($"{count} messages sent with key: {key}");
 }
 
-async Task SendMultiKeyBatch(KafkaProducer kafkaProducer)
+async Task SendMultiKeyBatch(IKafkaProducer kafkaProducer)
 {
     Console.Write("Enter number of keys: ");
     if (!int.TryParse(Console.ReadLine(), out var keyCount))
@@ -124,7 +124,7 @@ async Task SendMultiKeyBatch(KafkaProducer kafkaProducer)
     Console.WriteLine("All messages sent successfully.");
 }
 
-async Task RunDemo(KafkaProducer kafkaProducer)
+async Task RunDemo(IKafkaProducer kafkaProducer)
 {
     Console.WriteLine("Running demo with predefined messages...");
     Console.WriteLine("This demo will send messages for 3 customers concurrently to test ordering preservation per key.");
@@ -132,27 +132,27 @@ async Task RunDemo(KafkaProducer kafkaProducer)
     // Create sample data with multiple keys
     var keyedMessages = new Dictionary<string, List<Order>>
     {
-        ["customer-1"] = new List<Order>
-        {
+        ["customer-1"] =
+        [
             new Order { Status = "Order placed for customer 1" },
             new Order { Status = "Payment processed for customer 1" },
             new Order { Status = "Order shipped for customer 1" },
             new Order { Status = "Order delivered for customer 1" }
-        },
-        ["customer-2"] = new List<Order>
-        {
+        ],
+        ["customer-2"] =
+        [
             new Order { Status = "Order placed for customer 2" },
             new Order { Status = "Payment failed for customer 2" },
             new Order { Status = "Payment retry for customer 2" },
             new Order { Status = "Payment processed for customer 2" },
             new Order { Status = "Order shipped for customer 2" }
-        },
-        ["customer-3"] = new List<Order>
-        {
+        ],
+        ["customer-3"] =
+        [
             new Order { Status = "Order placed for customer 3" },
             new Order { Status = "Payment processed for customer 3" },
             new Order { Status = "Order cancelled for customer 3" }
-        }
+        ]
     };
 
     // Send messages concurrently to test the ordering preservation

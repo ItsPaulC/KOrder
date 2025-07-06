@@ -2,6 +2,7 @@
   <Folder Name="/.SolutionItems/">
     <File Path=".SolutionItems\docker-compose.yml" />
   </Folder>
+  <Project Path="KOrder.Api\KOrder.Api.csproj" Type="Classic C#" />
   <Project Path="KOrder.Consumer\KOrder.Consumer.csproj" Type="Classic C#" />
   <Project Path="KOrder.Producer\KOrder.Producer.csproj" Type="Classic C#" />
 </Solution>
