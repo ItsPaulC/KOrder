@@ -16,12 +16,14 @@ public class KeyedConsumer
     private readonly CancellationTokenSource _cts = new();
     private readonly TimeSpan _idleTimeout = TimeSpan.FromMinutes(5);
     private IConsumer<string, byte[]>? _consumer;
+    private readonly Func<ConsumeResult<string, byte[]>, Task>? _messageProcessor;
 
-    public KeyedConsumer(string bootstrapServers, string groupId, string topic)
+    public KeyedConsumer(string bootstrapServers, string groupId, string topic, Func<ConsumeResult<string, byte[]>, Task>? messageProcessor = null)
     {
         _bootstrapServers = bootstrapServers;
         _groupId = groupId;
         _topic = topic;
+        _messageProcessor = messageProcessor;
     }
 
     public Task StartConsumerAsync()
@@ -131,12 +133,20 @@ public class KeyedConsumer
                     {
                         try
                         {
-                            // Process the message
-                            var order = Order.Parser.ParseFrom(message.Message.Value);
-                            Console.WriteLine($"[Key: {key}] Processing: {order.Status} (Partition: {message.Partition.Value}, Offset: {message.Offset.Value}, Attempt: {retryCount + 1})");
+                            // Use custom processor if provided, otherwise use default logic
+                            if (_messageProcessor != null)
+                            {
+                                await _messageProcessor(message);
+                            }
+                            else
+                            {
+                                // Default processing logic
+                                var order = Order.Parser.ParseFrom(message.Message.Value);
+                                Console.WriteLine($"[Key: {key}] Processing: {order.Status} (Partition: {message.Partition.Value}, Offset: {message.Offset.Value}, Attempt: {retryCount + 1})");
 
-                            // Simulate some work - this ensures messages are processed one at a time per key
-                            await Task.Delay(100, _cts.Token);
+                                // Simulate some work - this ensures messages are processed one at a time per key
+                                await Task.Delay(100, _cts.Token);
+                            }
 
                             processingSucceeded = true;
 
