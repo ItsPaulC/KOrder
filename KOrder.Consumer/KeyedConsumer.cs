@@ -1,4 +1,5 @@
 ﻿using System.Collections.Concurrent;
+using System.Threading.Channels;
 using Confluent.Kafka;
 using KOrder;
 
@@ -10,8 +11,11 @@ public class KeyedConsumer
     private readonly string _groupId;
     private readonly string _topic;
     private readonly ConcurrentDictionary<string, Task> _processingTasks = new();
-    private readonly ConcurrentDictionary<string, ConcurrentQueue<ConsumeResult<string, byte[]>>> _messageQueues = new();
+    private readonly ConcurrentDictionary<string, ChannelWriter<ConsumeResult<string, byte[]>>> _messageChannels = new();
+    private readonly ConcurrentDictionary<string, DateTime> _lastActivityTime = new();
     private readonly CancellationTokenSource _cts = new();
+    private readonly TimeSpan _idleTimeout = TimeSpan.FromMinutes(5);
+    private IConsumer<string, byte[]>? _consumer;
 
     public KeyedConsumer(string bootstrapServers, string groupId, string topic)
     {
@@ -22,44 +26,65 @@ public class KeyedConsumer
 
     public Task StartConsumerAsync()
     {
-        return Task.Run(() =>
+        return Task.Run(async () =>
         {
             var config = new ConsumerConfig
             {
                 BootstrapServers = _bootstrapServers,
                 GroupId = _groupId,
-                AutoOffsetReset = AutoOffsetReset.Earliest
+                AutoOffsetReset = AutoOffsetReset.Earliest,
+                EnableAutoCommit = false, // Manual commit for better control
+                EnableAutoOffsetStore = false, // Store offsets manually after processing
+                SessionTimeoutMs = 10000,
+                MaxPollIntervalMs = 300000
             };
 
-            using var consumer = new ConsumerBuilder<string, byte[]>(config).Build();
-            consumer.Subscribe(_topic);
+            _consumer = new ConsumerBuilder<string, byte[]>(config).Build();
+            _consumer.Subscribe(_topic);
+
+            // Start idle key cleanup task
+            var cleanupTask = Task.Run(() => CleanupIdleKeysAsync());
 
             try
             {
                 while (!_cts.Token.IsCancellationRequested)
                 {
-                    var consumeResult = consumer.Consume(_cts.Token);
+                    var consumeResult = _consumer.Consume(_cts.Token);
 
                     if (consumeResult?.Message != null)
                     {
                         string? key = consumeResult.Message.Key;
                         if (!string.IsNullOrEmpty(key))
                         {
-                            _messageQueues.TryGetValue(key, out var queue);
-                            if (queue == null)
+                            // Get or create channel for this key
+                            if (!_messageChannels.TryGetValue(key, out var channelWriter))
                             {
-                                queue = new ConcurrentQueue<ConsumeResult<string, byte[]>>();
-                                _messageQueues.TryAdd(key, queue);
-                                // Start processing for this key if not already started
-                                _processingTasks.TryAdd(key, Task.Run(() => ProcessMessagesForKeyAsync(key, queue)));
+                                var channel = Channel.CreateUnbounded<ConsumeResult<string, byte[]>>(new UnboundedChannelOptions
+                                {
+                                    SingleReader = true,
+                                    SingleWriter = false
+                                });
+
+                                channelWriter = channel.Writer;
+                                _messageChannels.TryAdd(key, channelWriter);
+
+                                // Start processing for this key
+                                _processingTasks.TryAdd(key, Task.Run(() => ProcessMessagesForKeyAsync(key, channel.Reader)));
                             }
-                            queue.Enqueue(consumeResult);
+
+                            // Update last activity time
+                            _lastActivityTime.AddOrUpdate(key, DateTime.UtcNow, (_, _) => DateTime.UtcNow);
+
+                            // Write to channel (non-blocking)
+                            await channelWriter.WriteAsync(consumeResult, _cts.Token);
                         }
                         else
                         {
-                            // Handle messages without a key (processing order not guaranteed)
-                            Console.WriteLine($"Received message without key: {consumeResult.Message?.Value}");
-                            // You might want a separate processing mechanism for these
+                            // Handle messages without a key
+                            Console.WriteLine($"Received message without key at Partition: {consumeResult.Partition.Value}, Offset: {consumeResult.Offset.Value}");
+                            // Commit immediately since we're not processing
+                            _consumer.StoreOffset(consumeResult);
+                            _consumer.Commit();
                         }
                     }
                 }
@@ -67,61 +92,164 @@ public class KeyedConsumer
             catch (OperationCanceledException)
             {
                 // Consumer stopped
+                Console.WriteLine("Consumer cancellation requested");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Consumer error: {ex.Message}");
             }
             finally
             {
-                consumer.Close();
+                // Signal all channels to complete
+                foreach (var channel in _messageChannels.Values)
+                {
+                    channel.Complete();
+                }
+
+                _consumer?.Close();
+                _consumer?.Dispose();
+
+                await cleanupTask;
             }
         });
     }
 
-    private async Task ProcessMessagesForKeyAsync(string key, ConcurrentQueue<ConsumeResult<string, byte[]>> queue)
+    private async Task ProcessMessagesForKeyAsync(string key, ChannelReader<ConsumeResult<string, byte[]>> channelReader)
     {
-        while (!_cts.Token.IsCancellationRequested || !queue.IsEmpty)
+        try
         {
-            if (queue.TryDequeue(out var message) && message.Message?.Value != null)
+            // Process messages until the channel is completed
+            await foreach (var message in channelReader.ReadAllAsync(_cts.Token))
             {
-                try
+                if (message.Message?.Value != null)
                 {
-                    // Simulate processing the message
-                    var order = Order.Parser.ParseFrom(message.Message.Value);
-                    Console.WriteLine($"Processing message with key '{key}': {order.Status} (Partition: {message.Partition.Value}, Offset: {message.Offset.Value})");
+                    var processingSucceeded = false;
+                    var retryCount = 0;
+                    const int maxRetries = 3;
 
-                    // Simulate some work - this ensures messages are processed one at a time per key
-                    await Task.Delay(100, _cts.Token);
-                }
-                catch (OperationCanceledException)
-                {
-                    // Processing was cancelled
-                    break;
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"Error processing message for key '{key}': {ex.Message}");
-                }
-            }
-            else
-            {
-                // If the queue is empty and the consumer is still running, wait for new messages
-                try
-                {
-                    await Task.Delay(50, _cts.Token);
-                }
-                catch (OperationCanceledException)
-                {
-                    break;
+                    while (!processingSucceeded && retryCount < maxRetries)
+                    {
+                        try
+                        {
+                            // Process the message
+                            var order = Order.Parser.ParseFrom(message.Message.Value);
+                            Console.WriteLine($"[Key: {key}] Processing: {order.Status} (Partition: {message.Partition.Value}, Offset: {message.Offset.Value}, Attempt: {retryCount + 1})");
+
+                            // Simulate some work - this ensures messages are processed one at a time per key
+                            await Task.Delay(100, _cts.Token);
+
+                            processingSucceeded = true;
+
+                            // Store offset after successful processing
+                            _consumer?.StoreOffset(message);
+
+                            // Commit periodically (every message in this case, but could batch)
+                            _consumer?.Commit();
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            // Processing was cancelled, exit without retry
+                            Console.WriteLine($"[Key: {key}] Processing cancelled at Offset: {message.Offset.Value}");
+                            return;
+                        }
+                        catch (Exception ex)
+                        {
+                            retryCount++;
+                            Console.WriteLine($"[Key: {key}] Error processing message (Attempt {retryCount}/{maxRetries}): {ex.Message}");
+
+                            if (retryCount >= maxRetries)
+                            {
+                                // After max retries, log to dead letter queue (simulated here)
+                                Console.WriteLine($"[Key: {key}] DEAD LETTER: Failed to process message at Partition: {message.Partition.Value}, Offset: {message.Offset.Value}");
+                                // In production, send to DLQ topic or database
+
+                                // Store offset to move past this message
+                                _consumer?.StoreOffset(message);
+                                _consumer?.Commit();
+                            }
+                            else
+                            {
+                                // Exponential backoff before retry
+                                await Task.Delay(TimeSpan.FromSeconds(Math.Pow(2, retryCount)), _cts.Token);
+                            }
+                        }
+                    }
                 }
             }
         }
-        // Clean up the processing task when done
-        _processingTasks.TryRemove(key, out _);
-        _messageQueues.TryRemove(key, out _);
-        Console.WriteLine($"Stopped processing for key: {key}");
+        catch (OperationCanceledException)
+        {
+            Console.WriteLine($"[Key: {key}] Processing task cancelled");
+        }
+        finally
+        {
+            Console.WriteLine($"[Key: {key}] Stopped processing");
+        }
+    }
+
+    private async Task CleanupIdleKeysAsync()
+    {
+        while (!_cts.Token.IsCancellationRequested)
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromMinutes(1), _cts.Token);
+
+                var now = DateTime.UtcNow;
+                var keysToRemove = new List<string>();
+
+                foreach (var kvp in _lastActivityTime)
+                {
+                    if (now - kvp.Value > _idleTimeout)
+                    {
+                        keysToRemove.Add(kvp.Key);
+                    }
+                }
+
+                foreach (var key in keysToRemove)
+                {
+                    // Mark channel as complete
+                    if (_messageChannels.TryRemove(key, out var channelWriter))
+                    {
+                        channelWriter.Complete();
+                        Console.WriteLine($"[Key: {key}] Marked idle channel for cleanup");
+                    }
+
+                    // Wait for processing task to complete
+                    if (_processingTasks.TryRemove(key, out var task))
+                    {
+                        await task;
+                    }
+
+                    _lastActivityTime.TryRemove(key, out _);
+                    Console.WriteLine($"[Key: {key}] Cleaned up idle key after {_idleTimeout.TotalMinutes} minutes of inactivity");
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+        }
     }
 
     public void StopConsumer()
     {
+        Console.WriteLine("Stopping consumer...");
         _cts.Cancel();
-        Task.WaitAll(_processingTasks.Values.ToArray()); // Wait for all processing tasks to complete
+
+        // Wait for all processing tasks to complete with timeout
+        var timeout = TimeSpan.FromSeconds(30);
+        var allTasks = Task.WhenAll(_processingTasks.Values);
+
+        if (!allTasks.Wait(timeout))
+        {
+            Console.WriteLine($"Warning: Not all processing tasks completed within {timeout.TotalSeconds} seconds");
+        }
+        else
+        {
+            Console.WriteLine("All processing tasks completed successfully");
+        }
+
+        _consumer?.Dispose();
     }
 }
