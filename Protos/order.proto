@@ -3,5 +3,7 @@ syntax = "proto3";
 package KOrder;
 
 message Order {
-  string status = 1;
+  int32 order_id = 1;
+  string status = 2;
+  string customer_id = 3;
 }
