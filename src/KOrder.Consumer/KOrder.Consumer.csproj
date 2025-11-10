@@ -19,7 +19,7 @@
     </ItemGroup>
 
     <ItemGroup>
-        <Protobuf Include="..\Protos\order.proto" GrpcServices="None" />
+        <Protobuf Include="..\..\Protos\order.proto" GrpcServices="None" />
     </ItemGroup>
 
 </Project>

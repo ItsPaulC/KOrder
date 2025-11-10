@@ -11,14 +11,14 @@ public class KeyedConsumer
     private readonly string _groupId;
     private readonly string _topic;
     private readonly ConcurrentDictionary<string, Task> _processingTasks = new();
-    private readonly ConcurrentDictionary<string, ChannelWriter<ConsumeResult<string, byte[]>>> _messageChannels = new();
+    private readonly ConcurrentDictionary<string, ChannelWriter<ConsumeResult<string, Order>>> _messageChannels = new();
     private readonly ConcurrentDictionary<string, DateTime> _lastActivityTime = new();
     private readonly CancellationTokenSource _cts = new();
     private readonly TimeSpan _idleTimeout = TimeSpan.FromMinutes(5);
-    private IConsumer<string, byte[]>? _consumer;
-    private readonly Func<ConsumeResult<string, byte[]>, Task>? _messageProcessor;
+    private IConsumer<string, Order>? _consumer;
+    private readonly Func<ConsumeResult<string, Order>, Task>? _messageProcessor;
 
-    public KeyedConsumer(string bootstrapServers, string groupId, string topic, Func<ConsumeResult<string, byte[]>, Task>? messageProcessor = null)
+    public KeyedConsumer(string bootstrapServers, string groupId, string topic, Func<ConsumeResult<string, Order>, Task>? messageProcessor = null)
     {
         _bootstrapServers = bootstrapServers;
         _groupId = groupId;
@@ -30,7 +30,7 @@ public class KeyedConsumer
     {
         return Task.Run(async () =>
         {
-            var config = new ConsumerConfig
+            ConsumerConfig config = new()
             {
                 BootstrapServers = _bootstrapServers,
                 GroupId = _groupId,
@@ -41,17 +41,19 @@ public class KeyedConsumer
                 MaxPollIntervalMs = 300000
             };
 
-            _consumer = new ConsumerBuilder<string, byte[]>(config).Build();
+            _consumer = new ConsumerBuilder<string, Order>(config)
+                .SetValueDeserializer(new ProtobufDeserializer<Order>(Order.Parser))
+                .Build();
             _consumer.Subscribe(_topic);
 
             // Start idle key cleanup task
-            var cleanupTask = Task.Run(() => CleanupIdleKeysAsync());
+            Task cleanupTask = Task.Run(() => CleanupIdleKeysAsync());
 
             try
             {
                 while (!_cts.Token.IsCancellationRequested)
                 {
-                    var consumeResult = _consumer.Consume(_cts.Token);
+                    ConsumeResult<string, Order>? consumeResult = _consumer.Consume(_cts.Token);
 
                     if (consumeResult?.Message != null)
                     {
@@ -59,9 +61,9 @@ public class KeyedConsumer
                         if (!string.IsNullOrEmpty(key))
                         {
                             // Get or create channel for this key
-                            if (!_messageChannels.TryGetValue(key, out var channelWriter))
+                            if (!_messageChannels.TryGetValue(key, out ChannelWriter<ConsumeResult<string, Order>>? channelWriter))
                             {
-                                var channel = Channel.CreateUnbounded<ConsumeResult<string, byte[]>>(new UnboundedChannelOptions
+                                Channel<ConsumeResult<string, Order>> channel = Channel.CreateUnbounded<ConsumeResult<string, Order>>(new UnboundedChannelOptions
                                 {
                                     SingleReader = true,
                                     SingleWriter = false
@@ -103,7 +105,7 @@ public class KeyedConsumer
             finally
             {
                 // Signal all channels to complete
-                foreach (var channel in _messageChannels.Values)
+                foreach (ChannelWriter<ConsumeResult<string, Order>> channel in _messageChannels.Values)
                 {
                     channel.Complete();
                 }
@@ -116,17 +118,17 @@ public class KeyedConsumer
         });
     }
 
-    private async Task ProcessMessagesForKeyAsync(string key, ChannelReader<ConsumeResult<string, byte[]>> channelReader)
+    private async Task ProcessMessagesForKeyAsync(string key, ChannelReader<ConsumeResult<string, Order>> channelReader)
     {
         try
         {
             // Process messages until the channel is completed
-            await foreach (var message in channelReader.ReadAllAsync(_cts.Token))
+            await foreach (ConsumeResult<string, Order> message in channelReader.ReadAllAsync(_cts.Token))
             {
                 if (message.Message?.Value != null)
                 {
-                    var processingSucceeded = false;
-                    var retryCount = 0;
+                    bool processingSucceeded = false;
+                    int retryCount = 0;
                     const int maxRetries = 3;
 
                     while (!processingSucceeded && retryCount < maxRetries)
@@ -141,7 +143,7 @@ public class KeyedConsumer
                             else
                             {
                                 // Default processing logic
-                                var order = Order.Parser.ParseFrom(message.Message.Value);
+                                Order order = message.Message.Value; // Already deserialized by ProtobufDeserializer
                                 Console.WriteLine($"[Key: {key}] Processing: {order.Status} (Partition: {message.Partition.Value}, Offset: {message.Offset.Value}, Attempt: {retryCount + 1})");
 
                                 // Simulate some work - this ensures messages are processed one at a time per key
@@ -205,10 +207,10 @@ public class KeyedConsumer
             {
                 await Task.Delay(TimeSpan.FromMinutes(1), _cts.Token);
 
-                var now = DateTime.UtcNow;
-                var keysToRemove = new List<string>();
+                DateTime now = DateTime.UtcNow;
+                List<string> keysToRemove = new();
 
-                foreach (var kvp in _lastActivityTime)
+                foreach (KeyValuePair<string, DateTime> kvp in _lastActivityTime)
                 {
                     if (now - kvp.Value > _idleTimeout)
                     {
@@ -216,17 +218,17 @@ public class KeyedConsumer
                     }
                 }
 
-                foreach (var key in keysToRemove)
+                foreach (string key in keysToRemove)
                 {
                     // Mark channel as complete
-                    if (_messageChannels.TryRemove(key, out var channelWriter))
+                    if (_messageChannels.TryRemove(key, out ChannelWriter<ConsumeResult<string, Order>>? channelWriter))
                     {
                         channelWriter.Complete();
                         Console.WriteLine($"[Key: {key}] Marked idle channel for cleanup");
                     }
 
                     // Wait for processing task to complete
-                    if (_processingTasks.TryRemove(key, out var task))
+                    if (_processingTasks.TryRemove(key, out Task? task))
                     {
                         await task;
                     }
@@ -248,8 +250,8 @@ public class KeyedConsumer
         _cts.Cancel();
 
         // Wait for all processing tasks to complete with timeout
-        var timeout = TimeSpan.FromSeconds(30);
-        var allTasks = Task.WhenAll(_processingTasks.Values);
+        TimeSpan timeout = TimeSpan.FromSeconds(30);
+        Task allTasks = Task.WhenAll(_processingTasks.Values);
 
         if (!allTasks.Wait(timeout))
         {
