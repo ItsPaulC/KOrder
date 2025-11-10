@@ -12,18 +12,33 @@ public class KeyedConsumer
     private readonly string _topic;
     private readonly ConcurrentDictionary<string, Task> _processingTasks = new();
     private readonly ConcurrentDictionary<string, ChannelWriter<ConsumeResult<string, Order>>> _messageChannels = new();
+    private readonly ConcurrentDictionary<string, Channel<ConsumeResult<string, Order>>> _channels = new();
     private readonly ConcurrentDictionary<string, DateTime> _lastActivityTime = new();
     private readonly CancellationTokenSource _cts = new();
     private readonly TimeSpan _idleTimeout = TimeSpan.FromMinutes(5);
     private IConsumer<string, Order>? _consumer;
     private readonly Func<ConsumeResult<string, Order>, Task>? _messageProcessor;
 
-    public KeyedConsumer(string bootstrapServers, string groupId, string topic, Func<ConsumeResult<string, Order>, Task>? messageProcessor = null)
+    // Pause/Resume configuration
+    private readonly int _maxQueuedMessages;
+    private readonly int _resumeThreshold;
+    private bool _isPaused = false;
+    private readonly object _pauseLock = new();
+
+    public KeyedConsumer(
+        string bootstrapServers,
+        string groupId,
+        string topic,
+        Func<ConsumeResult<string, Order>, Task>? messageProcessor = null,
+        int maxQueuedMessages = 10000,
+        int resumeThreshold = 5000)
     {
         _bootstrapServers = bootstrapServers;
         _groupId = groupId;
         _topic = topic;
         _messageProcessor = messageProcessor;
+        _maxQueuedMessages = maxQueuedMessages;
+        _resumeThreshold = resumeThreshold;
     }
 
     public Task StartConsumerAsync()
@@ -47,9 +62,13 @@ public class KeyedConsumer
             _consumer.Subscribe(_topic);
 
             Console.WriteLine($"Consumer started. Subscribed to topic '{_topic}' with group ID '{_groupId}'. Waiting for messages...");
+            Console.WriteLine($"Backpressure enabled: Max queued messages = {_maxQueuedMessages}, Resume threshold = {_resumeThreshold}");
 
             // Start idle key cleanup task
             Task cleanupTask = Task.Run(() => CleanupIdleKeysAsync());
+
+            // Start periodic status logging
+            Task statusTask = Task.Run(() => LogStatusPeriodicallyAsync());
 
             try
             {
@@ -73,6 +92,7 @@ public class KeyedConsumer
 
                                 channelWriter = channel.Writer;
                                 _messageChannels.TryAdd(key, channelWriter);
+                                _channels.TryAdd(key, channel);
 
                                 // Start processing for this key
                                 _processingTasks.TryAdd(key, Task.Run(() => ProcessMessagesForKeyAsync(key, channel.Reader)));
@@ -83,6 +103,9 @@ public class KeyedConsumer
 
                             // Write to channel (non-blocking)
                             await channelWriter.WriteAsync(consumeResult, _cts.Token);
+
+                            // Check if we need to pause consumption due to backpressure
+                            CheckAndPauseIfNeeded();
                         }
                         else
                         {
@@ -116,6 +139,7 @@ public class KeyedConsumer
                 _consumer?.Dispose();
 
                 await cleanupTask;
+                await statusTask;
             }
         });
     }
@@ -229,6 +253,9 @@ public class KeyedConsumer
                         Console.WriteLine($"[Key: {key}] Marked idle channel for cleanup");
                     }
 
+                    // Remove from channels dictionary
+                    _channels.TryRemove(key, out _);
+
                     // Wait for processing task to complete
                     if (_processingTasks.TryRemove(key, out Task? task))
                     {
@@ -242,6 +269,67 @@ public class KeyedConsumer
             catch (OperationCanceledException)
             {
                 break;
+            }
+        }
+    }
+
+    private int GetTotalQueuedMessages()
+    {
+        int total = 0;
+        foreach (var channel in _channels.Values)
+        {
+            total += channel.Reader.Count;
+        }
+        return total;
+    }
+
+    private async Task LogStatusPeriodicallyAsync()
+    {
+        while (!_cts.Token.IsCancellationRequested)
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(30), _cts.Token);
+
+                int queuedMessages = GetTotalQueuedMessages();
+                int activeKeys = _channels.Count;
+                string status = _isPaused ? "PAUSED" : "RUNNING";
+
+                Console.WriteLine($"[STATUS] Consumer: {status} | Active Keys: {activeKeys} | Queued Messages: {queuedMessages}");
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+        }
+    }
+
+    private void CheckAndPauseIfNeeded()
+    {
+        int queuedMessages = GetTotalQueuedMessages();
+
+        if (!_isPaused && queuedMessages >= _maxQueuedMessages)
+        {
+            lock (_pauseLock)
+            {
+                if (!_isPaused)
+                {
+                    _isPaused = true;
+                    _consumer?.Pause(_consumer.Assignment);
+                    Console.WriteLine($"[BACKPRESSURE] Consumer PAUSED - Queued messages: {queuedMessages}/{_maxQueuedMessages}");
+                }
+            }
+        }
+        else if (_isPaused && queuedMessages <= _resumeThreshold)
+        {
+            lock (_pauseLock)
+            {
+                if (_isPaused)
+                {
+                    _isPaused = false;
+                    _consumer?.Resume(_consumer.Assignment);
+                    Console.WriteLine($"[BACKPRESSURE] Consumer RESUMED - Queued messages: {queuedMessages}/{_resumeThreshold}");
+                }
             }
         }
     }
