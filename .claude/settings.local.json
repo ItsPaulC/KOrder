@@ -28,7 +28,8 @@
       "Bash(docker-compose down:*)",
       "Bash(docker-compose up:*)",
       "Bash(docker exec:*)",
-      "Bash(dotnet run:*)"
+      "Bash(dotnet run:*)",
+      "Bash(tree:*)"
     ],
     "deny": [],
     "ask": []
