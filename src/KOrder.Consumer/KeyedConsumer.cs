@@ -46,6 +46,8 @@ public class KeyedConsumer
                 .Build();
             _consumer.Subscribe(_topic);
 
+            Console.WriteLine($"Consumer started. Subscribed to topic '{_topic}' with group ID '{_groupId}'. Waiting for messages...");
+
             // Start idle key cleanup task
             Task cleanupTask = Task.Run(() => CleanupIdleKeysAsync());
 

@@ -23,7 +23,12 @@
       "Bash(mv:*)",
       "Bash(lsof:*)",
       "Bash(cp:*)",
-      "Bash(rm:*)"
+      "Bash(rm:*)",
+      "Bash(docker logs:*)",
+      "Bash(docker-compose down:*)",
+      "Bash(docker-compose up:*)",
+      "Bash(docker exec:*)",
+      "Bash(dotnet run:*)"
     ],
     "deny": [],
     "ask": []
