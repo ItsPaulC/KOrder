@@ -1,23 +1,28 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
 
-namespace KThread.Consumer;
+namespace KThread.Consumer.HealthMonitoring;
 
 /// <summary>
-/// Lightweight HTTP server for K8s health checks (liveness and readiness probes)
+/// Lightweight HTTP server for K8s health checks (liveness and readiness probes).
+/// The kubelet makes direct HTTP calls to the container port - NO ingress required.
+/// Probes are cluster-internal only and not exposed externally.
 /// </summary>
 public class HealthCheckServer : IDisposable
 {
     private readonly HttpListener _listener;
     private readonly ConsumerHealthMonitor _healthMonitor;
+    private readonly ILogger<HealthCheckServer> _logger;
     private readonly int _port;
     private readonly CancellationTokenSource _cts = new();
     private Task? _serverTask;
 
-    public HealthCheckServer(ConsumerHealthMonitor healthMonitor, int port = 8080)
+    public HealthCheckServer(ConsumerHealthMonitor healthMonitor, ILogger<HealthCheckServer> logger, int port = 8080)
     {
         _healthMonitor = healthMonitor;
+        _logger = logger;
         _port = port;
         _listener = new HttpListener();
         _listener.Prefixes.Add($"http://+:{_port}/");
@@ -27,9 +32,9 @@ public class HealthCheckServer : IDisposable
     {
         _listener.Start();
         _serverTask = Task.Run(() => HandleRequestsAsync(_cts.Token));
-        Console.WriteLine($"[HEALTH-SERVER] Started on port {_port}");
-        Console.WriteLine($"[HEALTH-SERVER] Liveness probe: http://localhost:{_port}/health/live");
-        Console.WriteLine($"[HEALTH-SERVER] Readiness probe: http://localhost:{_port}/health/ready");
+        _logger.LogInformation("Health check server started on port {Port}", _port);
+        _logger.LogInformation("Liveness probe: http://localhost:{Port}/health/live", _port);
+        _logger.LogInformation("Readiness probe: http://localhost:{Port}/health/ready", _port);
     }
 
     private async Task HandleRequestsAsync(CancellationToken cancellationToken)
@@ -48,7 +53,7 @@ public class HealthCheckServer : IDisposable
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[HEALTH-SERVER] Error: {ex.Message}");
+                _logger.LogError(ex, "Health check server error");
             }
         }
     }
@@ -77,7 +82,7 @@ public class HealthCheckServer : IDisposable
 
                 default:
                     response.StatusCode = 404;
-                    var notFoundBytes = Encoding.UTF8.GetBytes("Not Found");
+                    byte[] notFoundBytes = Encoding.UTF8.GetBytes("Not Found");
                     response.OutputStream.Write(notFoundBytes, 0, notFoundBytes.Length);
                     break;
             }
@@ -86,7 +91,7 @@ public class HealthCheckServer : IDisposable
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[HEALTH-SERVER] Request processing error: {ex.Message}");
+            _logger.LogError(ex, "Request processing error");
         }
     }
 
@@ -99,7 +104,7 @@ public class HealthCheckServer : IDisposable
         // Simple check: is the process alive?
         // In production, you might check for deadlocks, etc.
         response.StatusCode = 200;
-        var responseBytes = Encoding.UTF8.GetBytes("OK");
+        byte[] responseBytes = Encoding.UTF8.GetBytes("OK");
         response.OutputStream.Write(responseBytes, 0, responseBytes.Length);
     }
 
@@ -133,7 +138,7 @@ public class HealthCheckServer : IDisposable
             response.ContentType = "application/json";
             response.OutputStream.Write(jsonBytes, 0, jsonBytes.Length);
 
-            Console.WriteLine($"[HEALTH-SERVER] Readiness check FAILED: {healthStatus.Reason}");
+            _logger.LogWarning("Readiness check FAILED: {Reason}", healthStatus.Reason);
         }
     }
 
@@ -142,11 +147,11 @@ public class HealthCheckServer : IDisposable
     /// </summary>
     private void HandleMetrics(HttpListenerResponse response)
     {
-        var healthStatus = _healthMonitor.CheckHealth();
-        var totalLag = _healthMonitor.GetTotalLag();
+        HealthStatus healthStatus = _healthMonitor.CheckHealth();
+        long totalLag = _healthMonitor.GetTotalLag();
 
         // Prometheus format
-        var metrics = new StringBuilder();
+        StringBuilder metrics = new StringBuilder();
         metrics.AppendLine("# HELP kafka_consumer_lag Current lag per partition");
         metrics.AppendLine("# TYPE kafka_consumer_lag gauge");
 
@@ -165,7 +170,7 @@ public class HealthCheckServer : IDisposable
 
         response.StatusCode = 200;
         response.ContentType = "text/plain; version=0.0.4";
-        var metricsBytes = Encoding.UTF8.GetBytes(metrics.ToString());
+        byte[] metricsBytes = Encoding.UTF8.GetBytes(metrics.ToString());
         response.OutputStream.Write(metricsBytes, 0, metricsBytes.Length);
     }
 
@@ -176,6 +181,6 @@ public class HealthCheckServer : IDisposable
         _listener.Close();
         _serverTask?.Wait(TimeSpan.FromSeconds(5));
         _cts.Dispose();
-        Console.WriteLine("[HEALTH-SERVER] Stopped");
+        _logger.LogInformation("Health check server stopped");
     }
 }

@@ -1,7 +1,7 @@
 using System.Collections.Concurrent;
 using Confluent.Kafka;
 
-namespace KThread.Consumer;
+namespace KThread.Consumer.HealthMonitoring;
 
 /// <summary>
 /// Monitors consumer health by tracking lag and detecting stuck consumers
@@ -44,8 +44,8 @@ public class ConsumerHealthMonitor
 
         foreach (var kvp in _lagHistory)
         {
-            var partition = kvp.Key;
-            var history = kvp.Value;
+            TopicPartition partition = kvp.Key;
+            PartitionLagHistory history = kvp.Value;
 
             // Check 1: Lag exceeds maximum acceptable threshold
             if (history.CurrentLag > _maxAcceptableLag)
@@ -86,18 +86,7 @@ public class ConsumerHealthMonitor
             LastCheckTime = _lastHealthCheck
         };
     }
-
-    /// <summary>
-    /// Gets current lag for all partitions
-    /// </summary>
-    public Dictionary<int, long> GetPartitionLags()
-    {
-        return _lagHistory.ToDictionary(
-            kvp => kvp.Key.Partition.Value,
-            kvp => kvp.Value.CurrentLag
-        );
-    }
-
+    
     /// <summary>
     /// Gets total lag across all partitions
     /// </summary>
@@ -106,84 +95,18 @@ public class ConsumerHealthMonitor
         return _lagHistory.Values.Sum(h => h.CurrentLag);
     }
 
+    /// <summary>
+    /// Gets current lag for all partitions
+    /// </summary>
+    private Dictionary<int, long> GetPartitionLags()
+    {
+        return _lagHistory.ToDictionary(
+            kvp => kvp.Key.Partition.Value,
+            kvp => kvp.Value.CurrentLag
+        );
+    }
+    
     public bool IsHealthy => _isHealthy;
     public string UnhealthyReason => _unhealthyReason;
     public DateTime LastHealthCheck => _lastHealthCheck;
-}
-
-/// <summary>
-/// Tracks lag history for a single partition
-/// </summary>
-internal class PartitionLagHistory
-{
-    private readonly Queue<long> _lagHistory;
-    private readonly int _maxHistorySize;
-
-    public PartitionLagHistory(int maxHistorySize)
-    {
-        _maxHistorySize = maxHistorySize;
-        _lagHistory = new Queue<long>(maxHistorySize);
-    }
-
-    public long CurrentLag { get; private set; }
-
-    public void AddLag(long lag)
-    {
-        CurrentLag = lag;
-        _lagHistory.Enqueue(lag);
-
-        if (_lagHistory.Count > _maxHistorySize)
-        {
-            _lagHistory.Dequeue();
-        }
-    }
-
-    /// <summary>
-    /// Checks if lag has been increasing consistently
-    /// </summary>
-    public bool IsConsistentlyIncreasing(int threshold)
-    {
-        if (_lagHistory.Count < threshold)
-            return false;
-
-        var increases = GetIncreasingCount();
-        return increases >= threshold;
-    }
-
-    /// <summary>
-    /// Counts consecutive lag increases
-    /// </summary>
-    public int GetIncreasingCount()
-    {
-        if (_lagHistory.Count < 2)
-            return 0;
-
-        var history = _lagHistory.ToArray();
-        int consecutiveIncreases = 0;
-
-        for (int i = 1; i < history.Length; i++)
-        {
-            if (history[i] > history[i - 1])
-            {
-                consecutiveIncreases++;
-            }
-            else
-            {
-                consecutiveIncreases = 0; // Reset on any decrease or plateau
-            }
-        }
-
-        return consecutiveIncreases;
-    }
-}
-
-/// <summary>
-/// Represents consumer health status
-/// </summary>
-public class HealthStatus
-{
-    public bool IsHealthy { get; set; }
-    public string Reason { get; set; } = string.Empty;
-    public Dictionary<int, long> PartitionLags { get; set; } = new();
-    public DateTime LastCheckTime { get; set; }
 }

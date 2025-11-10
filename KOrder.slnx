@@ -1,6 +1,7 @@
 ﻿<Solution>
   <Folder Name="/.SolutionItems/">
     <File Path=".SolutionItems\docker-compose.yml" />
+    <File Path=".SolutionItems\HEALTH_MONITORING.md" />
   </Folder>
   <Folder Name="/src/">
     <Project Path="src\KOrder.Api\KOrder.Api.csproj" Type="Classic C#" />

@@ -2,6 +2,8 @@
 using System.Threading.Channels;
 using Confluent.Kafka;
 using KOrder;
+using KThread.Consumer.HealthMonitoring;
+using Microsoft.Extensions.Logging;
 
 namespace KThread.Consumer;
 
@@ -33,12 +35,16 @@ public class KeyedConsumer
     private readonly bool _enableHealthMonitoring;
     private readonly TimeSpan _lagCheckInterval;
 
+    // Logging
+    private readonly ILogger<KeyedConsumer> _logger;
+
     public ConsumerHealthMonitor HealthMonitor => _healthMonitor;
 
     public KeyedConsumer(
         string bootstrapServers,
         string groupId,
         string topic,
+        ILogger<KeyedConsumer> logger,
         Func<ConsumeResult<string, Order>, Task>? messageProcessor = null,
         int maxQueuedMessages = 10000,
         int resumeThreshold = 5000,
@@ -50,6 +56,7 @@ public class KeyedConsumer
         _bootstrapServers = bootstrapServers;
         _groupId = groupId;
         _topic = topic;
+        _logger = logger;
         _messageProcessor = messageProcessor;
         _maxQueuedMessages = maxQueuedMessages;
         _resumeThreshold = resumeThreshold;
@@ -82,15 +89,13 @@ public class KeyedConsumer
                 .Build();
             _consumer.Subscribe(_topic);
 
-            Console.WriteLine($"Consumer started. Subscribed to topic '{_topic}' with group ID '{_groupId}'. Waiting for messages...");
-            Console.WriteLine($"Backpressure Configuration:");
-            Console.WriteLine($"  - Per-key channel capacity: {_perKeyChannelCapacity} messages (bounded channels)");
-            Console.WriteLine($"  - Global max queued messages: {_maxQueuedMessages} (pause threshold)");
-            Console.WriteLine($"  - Global resume threshold: {_resumeThreshold} messages");
+            _logger.LogInformation("Consumer started. Subscribed to topic '{Topic}' with group ID '{GroupId}'", _topic, _groupId);
+            _logger.LogInformation("Backpressure: per-key capacity={PerKeyCapacity}, global max={GlobalMax}, resume={Resume}",
+                _perKeyChannelCapacity, _maxQueuedMessages, _resumeThreshold);
 
             if (_enableHealthMonitoring)
             {
-                Console.WriteLine($"Health Monitoring: ENABLED (lag check interval: {_lagCheckInterval.TotalSeconds}s)");
+                _logger.LogInformation("Health monitoring enabled with {LagCheckInterval}s lag check interval", _lagCheckInterval.TotalSeconds);
             }
 
             // Start idle key cleanup task
@@ -147,7 +152,8 @@ public class KeyedConsumer
                         else
                         {
                             // Handle messages without a key
-                            Console.WriteLine($"Received message without key at Partition: {consumeResult.Partition.Value}, Offset: {consumeResult.Offset.Value}");
+                            _logger.LogWarning("Received message without key at Partition={Partition}, Offset={Offset}",
+                                consumeResult.Partition.Value, consumeResult.Offset.Value);
                             // Commit immediately since we're not processing
                             _consumer.StoreOffset(consumeResult);
                             _consumer.Commit();
@@ -158,11 +164,11 @@ public class KeyedConsumer
             catch (OperationCanceledException)
             {
                 // Consumer stopped
-                Console.WriteLine("Consumer cancellation requested");
+                _logger.LogInformation("Consumer cancellation requested");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Consumer error: {ex.Message}");
+                _logger.LogError(ex, "Consumer error: {Message}", ex.Message);
             }
             finally
             {
@@ -211,7 +217,8 @@ public class KeyedConsumer
                             {
                                 // Default processing logic
                                 Order order = message.Message.Value; // Already deserialized by ProtobufDeserializer
-                                Console.WriteLine($"[Key: {key}] Processing: {order.Status} (Partition: {message.Partition.Value}, Offset: {message.Offset.Value}, Attempt: {retryCount + 1})");
+                                _logger.LogDebug("Processing message for Key={Key}, Status={Status}, Partition={Partition}, Offset={Offset}, Attempt={Attempt}",
+                                    key, order.Status, message.Partition.Value, message.Offset.Value, retryCount + 1);
 
                                 // Simulate some work - this ensures messages are processed one at a time per key
                                 await Task.Delay(100, _cts.Token);
@@ -228,18 +235,20 @@ public class KeyedConsumer
                         catch (OperationCanceledException)
                         {
                             // Processing was cancelled, exit without retry
-                            Console.WriteLine($"[Key: {key}] Processing cancelled at Offset: {message.Offset.Value}");
+                            _logger.LogInformation("Processing cancelled for Key={Key} at Offset={Offset}", key, message.Offset.Value);
                             return;
                         }
                         catch (Exception ex)
                         {
                             retryCount++;
-                            Console.WriteLine($"[Key: {key}] Error processing message (Attempt {retryCount}/{maxRetries}): {ex.Message}");
+                            _logger.LogWarning(ex, "Error processing message for Key={Key} (Attempt {Attempt}/{MaxRetries})",
+                                key, retryCount, maxRetries);
 
                             if (retryCount >= maxRetries)
                             {
                                 // After max retries, log to dead letter queue (simulated here)
-                                Console.WriteLine($"[Key: {key}] DEAD LETTER: Failed to process message at Partition: {message.Partition.Value}, Offset: {message.Offset.Value}");
+                                _logger.LogError("DEAD LETTER: Failed to process message for Key={Key} at Partition={Partition}, Offset={Offset}",
+                                    key, message.Partition.Value, message.Offset.Value);
                                 // In production, send to DLQ topic or database
 
                                 // Store offset to move past this message
@@ -258,11 +267,11 @@ public class KeyedConsumer
         }
         catch (OperationCanceledException)
         {
-            Console.WriteLine($"[Key: {key}] Processing task cancelled");
+            _logger.LogInformation("Processing task cancelled for Key={Key}", key);
         }
         finally
         {
-            Console.WriteLine($"[Key: {key}] Stopped processing");
+            _logger.LogInformation("Stopped processing for Key={Key}", key);
         }
     }
 
@@ -291,7 +300,7 @@ public class KeyedConsumer
                     if (_messageChannels.TryRemove(key, out ChannelWriter<ConsumeResult<string, Order>>? channelWriter))
                     {
                         channelWriter.Complete();
-                        Console.WriteLine($"[Key: {key}] Marked idle channel for cleanup");
+                        _logger.LogDebug("Marked idle channel for cleanup for Key={Key}", key);
                     }
 
                     // Remove from channels dictionary
@@ -304,7 +313,8 @@ public class KeyedConsumer
                     }
 
                     _lastActivityTime.TryRemove(key, out _);
-                    Console.WriteLine($"[Key: {key}] Cleaned up idle key after {_idleTimeout.TotalMinutes} minutes of inactivity");
+                    _logger.LogInformation("Cleaned up idle key Key={Key} after {IdleMinutes} minutes of inactivity",
+                        key, _idleTimeout.TotalMinutes);
                 }
             }
             catch (OperationCanceledException)
@@ -317,7 +327,7 @@ public class KeyedConsumer
     private int GetTotalQueuedMessages()
     {
         int total = 0;
-        foreach (var channel in _channels.Values)
+        foreach (Channel<ConsumeResult<string, Order>> channel in _channels.Values)
         {
             total += channel.Reader.Count;
         }
@@ -336,7 +346,8 @@ public class KeyedConsumer
                 int activeKeys = _channels.Count;
                 string status = _isPaused ? "PAUSED" : "RUNNING";
 
-                Console.WriteLine($"[STATUS] Consumer: {status} | Active Keys: {activeKeys} | Queued Messages: {queuedMessages}");
+                _logger.LogInformation("Consumer status: {Status}, Active keys: {ActiveKeys}, Queued messages: {QueuedMessages}",
+                    status, activeKeys, queuedMessages);
             }
             catch (OperationCanceledException)
             {
@@ -356,24 +367,24 @@ public class KeyedConsumer
                 if (_consumer == null) continue;
 
                 // Get assigned partitions
-                var assignment = _consumer.Assignment;
+                List<TopicPartition>? assignment = _consumer.Assignment;
                 if (assignment == null || assignment.Count == 0) continue;
 
                 // Calculate lag for each partition
-                foreach (var partition in assignment)
+                foreach (TopicPartition partition in assignment)
                 {
                     try
                     {
                         // Get committed offset (where we are)
-                        var committed = _consumer.Committed(new[] { partition }, TimeSpan.FromSeconds(5));
-                        var committedOffset = committed?.FirstOrDefault()?.Offset ?? Offset.Unset;
+                        List<TopicPartitionOffset>? committed = _consumer.Committed(new[] { partition }, TimeSpan.FromSeconds(5));
+                        Offset committedOffset = committed?.FirstOrDefault()?.Offset ?? Offset.Unset;
 
                         if (committedOffset == Offset.Unset)
                             continue;
 
                         // Get high water mark (latest offset in partition)
-                        var watermarkOffsets = _consumer.QueryWatermarkOffsets(partition, TimeSpan.FromSeconds(5));
-                        var highWaterMark = watermarkOffsets.High.Value;
+                        WatermarkOffsets? watermarkOffsets = _consumer.QueryWatermarkOffsets(partition, TimeSpan.FromSeconds(5));
+                        long highWaterMark = watermarkOffsets.High.Value;
 
                         // Calculate lag
                         long lag = highWaterMark - committedOffset.Value;
@@ -383,17 +394,18 @@ public class KeyedConsumer
                     }
                     catch (Exception ex)
                     {
-                        Console.WriteLine($"[LAG-MONITOR] Error checking lag for partition {partition.Partition}: {ex.Message}");
+                        _logger.LogWarning(ex, "Error checking lag for partition {Partition}", partition.Partition);
                     }
                 }
 
                 // Check health after recording all partition lags
-                var healthStatus = _healthMonitor.CheckHealth();
+                HealthStatus healthStatus = _healthMonitor.CheckHealth();
 
                 if (!healthStatus.IsHealthy)
                 {
-                    Console.WriteLine($"[HEALTH] ⚠️ UNHEALTHY: {healthStatus.Reason}");
-                    Console.WriteLine($"[HEALTH] Partition Lags: {string.Join(", ", healthStatus.PartitionLags.Select(kvp => $"P{kvp.Key}={kvp.Value}"))}");
+                    var lagsSummary = string.Join(", ", healthStatus.PartitionLags.Select(kvp => $"P{kvp.Key}={kvp.Value}"));
+                    _logger.LogWarning("Consumer UNHEALTHY: {Reason}. Partition lags: {Lags}",
+                        healthStatus.Reason, lagsSummary);
                 }
             }
             catch (OperationCanceledException)
@@ -402,7 +414,7 @@ public class KeyedConsumer
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[LAG-MONITOR] Error in lag monitoring: {ex.Message}");
+                _logger.LogError(ex, "Error in lag monitoring");
             }
         }
     }
@@ -419,7 +431,8 @@ public class KeyedConsumer
                 {
                     _isPaused = true;
                     _consumer?.Pause(_consumer.Assignment);
-                    Console.WriteLine($"[BACKPRESSURE] Consumer PAUSED - Queued messages: {queuedMessages}/{_maxQueuedMessages}");
+                    _logger.LogWarning("BACKPRESSURE: Consumer PAUSED - Queued messages: {QueuedMessages}/{MaxQueuedMessages}",
+                        queuedMessages, _maxQueuedMessages);
                 }
             }
         }
@@ -431,7 +444,8 @@ public class KeyedConsumer
                 {
                     _isPaused = false;
                     _consumer?.Resume(_consumer.Assignment);
-                    Console.WriteLine($"[BACKPRESSURE] Consumer RESUMED - Queued messages: {queuedMessages}/{_resumeThreshold}");
+                    _logger.LogInformation("BACKPRESSURE: Consumer RESUMED - Queued messages: {QueuedMessages}/{ResumeThreshold}",
+                        queuedMessages, _resumeThreshold);
                 }
             }
         }
@@ -439,7 +453,7 @@ public class KeyedConsumer
 
     public void StopConsumer()
     {
-        Console.WriteLine("Stopping consumer...");
+        _logger.LogInformation("Stopping consumer...");
         _cts.Cancel();
 
         // Wait for all processing tasks to complete with timeout
@@ -448,11 +462,11 @@ public class KeyedConsumer
 
         if (!allTasks.Wait(timeout))
         {
-            Console.WriteLine($"Warning: Not all processing tasks completed within {timeout.TotalSeconds} seconds");
+            _logger.LogWarning("Not all processing tasks completed within {TimeoutSeconds} seconds", timeout.TotalSeconds);
         }
         else
         {
-            Console.WriteLine("All processing tasks completed successfully");
+            _logger.LogInformation("All processing tasks completed successfully");
         }
 
         _consumer?.Dispose();

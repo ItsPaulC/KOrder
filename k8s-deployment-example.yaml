@@ -1,3 +1,13 @@
+# IMPORTANT: Health checks (liveness/readiness probes) do NOT require an ingress.
+#
+# How K8s health checks work:
+# 1. Each pod exposes port 8080 with /health/live and /health/ready endpoints
+# 2. The kubelet on the node makes direct HTTP GET requests to: http://<pod-ip>:8080/health/ready
+# 3. This is pod-to-pod communication within the cluster - NO service/ingress needed
+# 4. If probe fails, kubelet marks pod unready/restarts it automatically
+#
+# The Service resource below is OPTIONAL - only for Prometheus metrics scraping (/metrics endpoint)
+
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -42,8 +52,8 @@ spec:
           containerPort: 8080
           protocol: TCP
 
-        # Liveness Probe: K8s will restart pod if this fails
-        # Only fails if the process is completely stuck/deadlocked
+        # Liveness Probe: Kubelet calls http://<pod-ip>:8080/health/live directly (no ingress)
+        # K8s will restart pod if this fails - only fails if process is stuck/deadlocked
         livenessProbe:
           httpGet:
             path: /health/live
@@ -53,7 +63,8 @@ spec:
           timeoutSeconds: 5
           failureThreshold: 3  # Restart after 3 consecutive failures
 
-        # Readiness Probe: K8s will stop sending traffic if this fails
+        # Readiness Probe: Kubelet calls http://<pod-ip>:8080/health/ready directly (no ingress)
+        # K8s will stop sending traffic if this fails
         # Fails if consumer is stuck (increasing lag) or lag exceeds threshold
         readinessProbe:
           httpGet:
@@ -80,6 +91,8 @@ spec:
               command: ["/bin/sh", "-c", "sleep 15"]  # Allow time to drain messages
 
 ---
+# Service is OPTIONAL - only needed for Prometheus metrics scraping
+# NOT required for liveness/readiness probes (kubelet accesses pods directly)
 apiVersion: v1
 kind: Service
 metadata:
