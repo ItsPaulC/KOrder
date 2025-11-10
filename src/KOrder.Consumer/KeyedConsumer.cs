@@ -28,6 +28,13 @@ public class KeyedConsumer
     // Bounded channel configuration (per-key backpressure)
     private readonly int _perKeyChannelCapacity;
 
+    // Health monitoring
+    private readonly ConsumerHealthMonitor _healthMonitor;
+    private readonly bool _enableHealthMonitoring;
+    private readonly TimeSpan _lagCheckInterval;
+
+    public ConsumerHealthMonitor HealthMonitor => _healthMonitor;
+
     public KeyedConsumer(
         string bootstrapServers,
         string groupId,
@@ -35,7 +42,10 @@ public class KeyedConsumer
         Func<ConsumeResult<string, Order>, Task>? messageProcessor = null,
         int maxQueuedMessages = 10000,
         int resumeThreshold = 5000,
-        int perKeyChannelCapacity = 1000)
+        int perKeyChannelCapacity = 1000,
+        bool enableHealthMonitoring = true,
+        long maxAcceptableLag = 10000,
+        int lagCheckIntervalSeconds = 10)
     {
         _bootstrapServers = bootstrapServers;
         _groupId = groupId;
@@ -44,6 +54,12 @@ public class KeyedConsumer
         _maxQueuedMessages = maxQueuedMessages;
         _resumeThreshold = resumeThreshold;
         _perKeyChannelCapacity = perKeyChannelCapacity;
+        _enableHealthMonitoring = enableHealthMonitoring;
+        _lagCheckInterval = TimeSpan.FromSeconds(lagCheckIntervalSeconds);
+        _healthMonitor = new ConsumerHealthMonitor(
+            lagCheckWindowSize: 5,
+            maxAcceptableLag: maxAcceptableLag,
+            consecutiveIncreaseThreshold: 3);
     }
 
     public Task StartConsumerAsync()
@@ -72,11 +88,23 @@ public class KeyedConsumer
             Console.WriteLine($"  - Global max queued messages: {_maxQueuedMessages} (pause threshold)");
             Console.WriteLine($"  - Global resume threshold: {_resumeThreshold} messages");
 
+            if (_enableHealthMonitoring)
+            {
+                Console.WriteLine($"Health Monitoring: ENABLED (lag check interval: {_lagCheckInterval.TotalSeconds}s)");
+            }
+
             // Start idle key cleanup task
             Task cleanupTask = Task.Run(() => CleanupIdleKeysAsync());
 
             // Start periodic status logging
             Task statusTask = Task.Run(() => LogStatusPeriodicallyAsync());
+
+            // Start lag monitoring task
+            Task? lagMonitorTask = null;
+            if (_enableHealthMonitoring)
+            {
+                lagMonitorTask = Task.Run(() => MonitorLagAsync());
+            }
 
             try
             {
@@ -149,6 +177,10 @@ public class KeyedConsumer
 
                 await cleanupTask;
                 await statusTask;
+                if (lagMonitorTask != null)
+                {
+                    await lagMonitorTask;
+                }
             }
         });
     }
@@ -309,6 +341,68 @@ public class KeyedConsumer
             catch (OperationCanceledException)
             {
                 break;
+            }
+        }
+    }
+
+    private async Task MonitorLagAsync()
+    {
+        while (!_cts.Token.IsCancellationRequested)
+        {
+            try
+            {
+                await Task.Delay(_lagCheckInterval, _cts.Token);
+
+                if (_consumer == null) continue;
+
+                // Get assigned partitions
+                var assignment = _consumer.Assignment;
+                if (assignment == null || assignment.Count == 0) continue;
+
+                // Calculate lag for each partition
+                foreach (var partition in assignment)
+                {
+                    try
+                    {
+                        // Get committed offset (where we are)
+                        var committed = _consumer.Committed(new[] { partition }, TimeSpan.FromSeconds(5));
+                        var committedOffset = committed?.FirstOrDefault()?.Offset ?? Offset.Unset;
+
+                        if (committedOffset == Offset.Unset)
+                            continue;
+
+                        // Get high water mark (latest offset in partition)
+                        var watermarkOffsets = _consumer.QueryWatermarkOffsets(partition, TimeSpan.FromSeconds(5));
+                        var highWaterMark = watermarkOffsets.High.Value;
+
+                        // Calculate lag
+                        long lag = highWaterMark - committedOffset.Value;
+
+                        // Record lag in health monitor
+                        _healthMonitor.RecordLag(partition, lag);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[LAG-MONITOR] Error checking lag for partition {partition.Partition}: {ex.Message}");
+                    }
+                }
+
+                // Check health after recording all partition lags
+                var healthStatus = _healthMonitor.CheckHealth();
+
+                if (!healthStatus.IsHealthy)
+                {
+                    Console.WriteLine($"[HEALTH] ⚠️ UNHEALTHY: {healthStatus.Reason}");
+                    Console.WriteLine($"[HEALTH] Partition Lags: {string.Join(", ", healthStatus.PartitionLags.Select(kvp => $"P{kvp.Key}={kvp.Value}"))}");
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[LAG-MONITOR] Error in lag monitoring: {ex.Message}");
             }
         }
     }

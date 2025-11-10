@@ -10,6 +10,11 @@ public class Program
         string topic = "keyed-messages-topic"; // Replace with your topic name
 
         var consumer = new KeyedConsumer(bootstrapServers, groupId, topic);
+
+        // Start health check server for K8s probes
+        using var healthServer = new HealthCheckServer(consumer.HealthMonitor, port: 8080);
+        healthServer.Start();
+
         await consumer.StartConsumerAsync();
 
         Console.WriteLine("Press any key to stop the consumer...");

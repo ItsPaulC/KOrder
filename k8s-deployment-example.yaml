@@ -1,0 +1,152 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: korder-consumer
+  labels:
+    app: korder-consumer
+spec:
+  replicas: 3  # One per partition (if topic has 3 partitions)
+  selector:
+    matchLabels:
+      app: korder-consumer
+  template:
+    metadata:
+      labels:
+        app: korder-consumer
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+      - name: consumer
+        image: your-registry/korder-consumer:latest
+        imagePullPolicy: Always
+
+        env:
+        - name: KAFKA_BOOTSTRAP_SERVERS
+          value: "kafka-service:9092"
+        - name: KAFKA_GROUP_ID
+          value: "korder-consumer-group"
+        - name: KAFKA_TOPIC
+          value: "keyed-messages-topic"
+        - name: HEALTH_CHECK_PORT
+          value: "8080"
+        - name: MAX_ACCEPTABLE_LAG
+          value: "10000"  # Fail health check if lag exceeds this
+        - name: LAG_CHECK_INTERVAL_SECONDS
+          value: "10"
+
+        ports:
+        - name: health
+          containerPort: 8080
+          protocol: TCP
+
+        # Liveness Probe: K8s will restart pod if this fails
+        # Only fails if the process is completely stuck/deadlocked
+        livenessProbe:
+          httpGet:
+            path: /health/live
+            port: health
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3  # Restart after 3 consecutive failures
+
+        # Readiness Probe: K8s will stop sending traffic if this fails
+        # Fails if consumer is stuck (increasing lag) or lag exceeds threshold
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: health
+          initialDelaySeconds: 15
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 2  # Mark unready after 2 consecutive failures
+          successThreshold: 1  # Mark ready after 1 success
+
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"  # Headroom for message buffers
+            cpu: "2000m"
+
+        # Graceful shutdown
+        lifecycle:
+          preStop:
+            exec:
+              command: ["/bin/sh", "-c", "sleep 15"]  # Allow time to drain messages
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: korder-consumer-metrics
+  labels:
+    app: korder-consumer
+spec:
+  type: ClusterIP
+  ports:
+  - name: metrics
+    port: 8080
+    targetPort: health
+    protocol: TCP
+  selector:
+    app: korder-consumer
+
+---
+# Optional: ServiceMonitor for Prometheus Operator
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: korder-consumer
+  labels:
+    app: korder-consumer
+spec:
+  selector:
+    matchLabels:
+      app: korder-consumer
+  endpoints:
+  - port: metrics
+    interval: 15s
+    path: /metrics
+
+---
+# Optional: PrometheusRule for alerting
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: korder-consumer-alerts
+spec:
+  groups:
+  - name: korder-consumer
+    interval: 30s
+    rules:
+    - alert: ConsumerHighLag
+      expr: kafka_consumer_total_lag > 50000
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Consumer lag is high ({{ $value }})"
+        description: "Consumer {{ $labels.pod }} has lag of {{ $value }} messages"
+
+    - alert: ConsumerStuck
+      expr: kafka_consumer_healthy == 0
+      for: 2m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Consumer is unhealthy/stuck"
+        description: "Consumer {{ $labels.pod }} has been unhealthy for 2 minutes"
+
+    - alert: ConsumerCrashing
+      expr: rate(kube_pod_container_status_restarts_total{container="consumer"}[15m]) > 0
+      for: 5m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Consumer pod is crash-looping"
+        description: "Consumer {{ $labels.pod }} is restarting frequently"
