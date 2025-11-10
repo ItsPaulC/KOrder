@@ -19,11 +19,14 @@ public class KeyedConsumer
     private IConsumer<string, Order>? _consumer;
     private readonly Func<ConsumeResult<string, Order>, Task>? _messageProcessor;
 
-    // Pause/Resume configuration
+    // Pause/Resume configuration (global backpressure)
     private readonly int _maxQueuedMessages;
     private readonly int _resumeThreshold;
     private bool _isPaused = false;
     private readonly object _pauseLock = new();
+
+    // Bounded channel configuration (per-key backpressure)
+    private readonly int _perKeyChannelCapacity;
 
     public KeyedConsumer(
         string bootstrapServers,
@@ -31,7 +34,8 @@ public class KeyedConsumer
         string topic,
         Func<ConsumeResult<string, Order>, Task>? messageProcessor = null,
         int maxQueuedMessages = 10000,
-        int resumeThreshold = 5000)
+        int resumeThreshold = 5000,
+        int perKeyChannelCapacity = 1000)
     {
         _bootstrapServers = bootstrapServers;
         _groupId = groupId;
@@ -39,6 +43,7 @@ public class KeyedConsumer
         _messageProcessor = messageProcessor;
         _maxQueuedMessages = maxQueuedMessages;
         _resumeThreshold = resumeThreshold;
+        _perKeyChannelCapacity = perKeyChannelCapacity;
     }
 
     public Task StartConsumerAsync()
@@ -62,7 +67,10 @@ public class KeyedConsumer
             _consumer.Subscribe(_topic);
 
             Console.WriteLine($"Consumer started. Subscribed to topic '{_topic}' with group ID '{_groupId}'. Waiting for messages...");
-            Console.WriteLine($"Backpressure enabled: Max queued messages = {_maxQueuedMessages}, Resume threshold = {_resumeThreshold}");
+            Console.WriteLine($"Backpressure Configuration:");
+            Console.WriteLine($"  - Per-key channel capacity: {_perKeyChannelCapacity} messages (bounded channels)");
+            Console.WriteLine($"  - Global max queued messages: {_maxQueuedMessages} (pause threshold)");
+            Console.WriteLine($"  - Global resume threshold: {_resumeThreshold} messages");
 
             // Start idle key cleanup task
             Task cleanupTask = Task.Run(() => CleanupIdleKeysAsync());
@@ -84,10 +92,11 @@ public class KeyedConsumer
                             // Get or create channel for this key
                             if (!_messageChannels.TryGetValue(key, out ChannelWriter<ConsumeResult<string, Order>>? channelWriter))
                             {
-                                Channel<ConsumeResult<string, Order>> channel = Channel.CreateUnbounded<ConsumeResult<string, Order>>(new UnboundedChannelOptions
+                                Channel<ConsumeResult<string, Order>> channel = Channel.CreateBounded<ConsumeResult<string, Order>>(new BoundedChannelOptions(_perKeyChannelCapacity)
                                 {
                                     SingleReader = true,
-                                    SingleWriter = false
+                                    SingleWriter = false,
+                                    FullMode = BoundedChannelFullMode.Wait // Backpressure: blocks writer when full
                                 });
 
                                 channelWriter = channel.Writer;
