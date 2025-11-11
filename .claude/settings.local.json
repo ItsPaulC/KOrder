@@ -29,7 +29,9 @@
       "Bash(docker-compose up:*)",
       "Bash(docker exec:*)",
       "Bash(dotnet run:*)",
-      "Bash(tree:*)"
+      "Bash(tree:*)",
+      "Bash(git reset:*)",
+      "Bash(git rm:*)"
     ],
     "deny": [],
     "ask": []
