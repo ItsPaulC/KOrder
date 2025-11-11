@@ -3,7 +3,6 @@ using Google.Protobuf;
 using KOrder.Consumer.Engine.HealthMonitoring;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 
 namespace KOrder.Consumer.Engine;
 
@@ -18,53 +17,45 @@ public static class ServiceCollectionExtensions
     /// <typeparam name="TMessage">Protobuf message type</typeparam>
     /// <param name="services">The service collection</param>
     /// <param name="parser">Protobuf message parser</param>
-    /// <param name="configureOptions">Optional action to configure consumer options</param>
+    /// <param name="settings">Consumer configuration settings</param>
     /// <returns>The service collection for chaining</returns>
     public static IServiceCollection AddKafkaKeyedConsumer<TMessage>(
         this IServiceCollection services,
         MessageParser<TMessage> parser,
-        Action<KafkaConsumerOptions>? configureOptions = null)
+        KafkaConsumerSettings settings)
         where TMessage : IMessage<TMessage>, new()
     {
-        // Register configuration
-        if (configureOptions != null)
-        {
-            services.Configure(configureOptions);
-        }
-
         // Register the consumer as singleton
         services.AddSingleton(sp =>
         {
-            KafkaConsumerOptions options = sp.GetRequiredService<IOptions<KafkaConsumerOptions>>().Value;
-            ILogger<KeyedConsumer<TMessage>> logger = sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<KeyedConsumer<TMessage>>>();
+            ILogger<KeyedConsumer<TMessage>> logger = sp.GetRequiredService<ILogger<KeyedConsumer<TMessage>>>();
             IMessageProcessor<TMessage> messageProcessor = sp.GetRequiredService<IMessageProcessor<TMessage>>();
 
             return new KeyedConsumer<TMessage>(
-                bootstrapServers: options.BootstrapServers,
-                groupId: options.GroupId,
-                topic: options.Topic,
+                bootstrapServers: settings.BootstrapServers,
+                groupId: settings.GroupId,
+                topic: settings.Topic,
                 parser: parser,
                 messageProcessor: messageProcessor.ProcessAsync,
                 logger: logger,
-                maxQueuedMessages: options.MaxQueuedMessages,
-                resumeThreshold: options.ResumeThreshold,
-                perKeyChannelCapacity: options.PerKeyChannelCapacity,
-                enableHealthMonitoring: options.EnableHealthMonitoring,
-                maxAcceptableLag: options.MaxAcceptableLag,
-                lagCheckIntervalSeconds: options.LagCheckIntervalSeconds);
+                maxQueuedMessages: settings.MaxQueuedMessages,
+                resumeThreshold: settings.ResumeThreshold,
+                perKeyChannelCapacity: settings.PerKeyChannelCapacity,
+                enableHealthMonitoring: settings.EnableHealthMonitoring,
+                maxAcceptableLag: settings.MaxAcceptableLag,
+                lagCheckIntervalSeconds: settings.LagCheckIntervalSeconds);
         });
 
         // Register health check server
         services.AddSingleton(sp =>
         {
-            var options = sp.GetRequiredService<IOptions<KafkaConsumerOptions>>().Value;
-            var consumer = sp.GetRequiredService<KeyedConsumer<TMessage>>();
-            var logger = sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<HealthCheckServer>>();
+            KeyedConsumer<TMessage> consumer = sp.GetRequiredService<KeyedConsumer<TMessage>>();
+            ILogger<HealthCheckServer> logger = sp.GetRequiredService<ILogger<HealthCheckServer>>();
 
             return new HealthCheckServer(
                 consumer.HealthMonitor,
                 logger,
-                options.HealthCheckPort);
+                settings.HealthCheckPort);
         });
 
         return services;
@@ -76,55 +67,47 @@ public static class ServiceCollectionExtensions
     /// <typeparam name="TMessage">Protobuf message type</typeparam>
     /// <param name="services">The service collection</param>
     /// <param name="parser">Protobuf message parser</param>
+    /// <param name="settings">Consumer configuration settings</param>
     /// <param name="messageProcessorFactory">Factory function to create the message processor</param>
-    /// <param name="configureOptions">Optional action to configure consumer options</param>
     /// <returns>The service collection for chaining</returns>
     public static IServiceCollection AddKafkaKeyedConsumer<TMessage>(
         this IServiceCollection services,
         MessageParser<TMessage> parser,
-        Func<IServiceProvider, Func<Confluent.Kafka.ConsumeResult<string, TMessage>, Task>> messageProcessorFactory,
-        Action<KafkaConsumerOptions>? configureOptions = null)
+        KafkaConsumerSettings settings,
+        Func<IServiceProvider, Func<ConsumeResult<string, TMessage>, Task>> messageProcessorFactory)
         where TMessage : IMessage<TMessage>, new()
     {
-        // Register configuration
-        if (configureOptions != null)
-        {
-            services.Configure(configureOptions);
-        }
-
         // Register the consumer as singleton
         services.AddSingleton(sp =>
         {
-            KafkaConsumerOptions options = sp.GetRequiredService<IOptions<KafkaConsumerOptions>>().Value;
-            ILogger<KeyedConsumer<TMessage>> logger = sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<KeyedConsumer<TMessage>>>();
+            ILogger<KeyedConsumer<TMessage>> logger = sp.GetRequiredService<ILogger<KeyedConsumer<TMessage>>>();
             Func<ConsumeResult<string, TMessage>, Task> messageProcessor = messageProcessorFactory(sp);
 
             return new KeyedConsumer<TMessage>(
-                bootstrapServers: options.BootstrapServers,
-                groupId: options.GroupId,
-                topic: options.Topic,
+                bootstrapServers: settings.BootstrapServers,
+                groupId: settings.GroupId,
+                topic: settings.Topic,
                 parser: parser,
                 messageProcessor: messageProcessor,
                 logger: logger,
-                maxQueuedMessages: options.MaxQueuedMessages,
-                resumeThreshold: options.ResumeThreshold,
-                perKeyChannelCapacity: options.PerKeyChannelCapacity,
-                enableHealthMonitoring: options.EnableHealthMonitoring,
-                maxAcceptableLag: options.MaxAcceptableLag,
-                lagCheckIntervalSeconds: options.LagCheckIntervalSeconds);
+                maxQueuedMessages: settings.MaxQueuedMessages,
+                resumeThreshold: settings.ResumeThreshold,
+                perKeyChannelCapacity: settings.PerKeyChannelCapacity,
+                enableHealthMonitoring: settings.EnableHealthMonitoring,
+                maxAcceptableLag: settings.MaxAcceptableLag,
+                lagCheckIntervalSeconds: settings.LagCheckIntervalSeconds);
         });
 
         // Register health check server
         services.AddSingleton(sp =>
         {
-            var options = sp.GetRequiredService<IOptions<KafkaConsumerOptions>>().Value;
-            var consumer = sp.GetRequiredService<KeyedConsumer<TMessage>>();
-            var logger = sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<HealthCheckServer>>();
+            KeyedConsumer<TMessage> consumer = sp.GetRequiredService<KeyedConsumer<TMessage>>();
+            ILogger<HealthCheckServer> logger = sp.GetRequiredService<ILogger<HealthCheckServer>>();
 
             return new HealthCheckServer(
                 consumer.HealthMonitor,
                 logger,
-                options.HealthCheckPort);
+                settings.HealthCheckPort);
         });
 
         return services;

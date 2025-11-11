@@ -48,7 +48,22 @@ public class OrderMessageProcessor : IMessageProcessor<Order>
 }
 ```
 
-### 2. Register Services
+### 2. Configure Settings
+
+Create and populate the Kafka consumer settings:
+
+```csharp
+var settings = new KafkaConsumerSettings
+{
+    BootstrapServers = "localhost:9092",
+    GroupId = "my-consumer-group",
+    Topic = "my-topic",
+    MaxAcceptableLag = 10000,
+    HealthCheckPort = 8080
+};
+```
+
+### 3. Register Services
 
 In your `Program.cs` or startup configuration:
 
@@ -57,21 +72,14 @@ var services = new ServiceCollection()
     .AddLogging(builder => builder.AddConsole())
     // Register your message processor
     .AddSingleton<IMessageProcessor<Order>, OrderMessageProcessor>()
-    // Register the Kafka consumer
+    // Register the Kafka consumer with settings
     .AddKafkaKeyedConsumer<Order>(
         parser: Order.Parser,
-        configureOptions: options =>
-        {
-            options.BootstrapServers = "localhost:9092";
-            options.GroupId = "my-consumer-group";
-            options.Topic = "my-topic";
-            options.MaxAcceptableLag = 10000;
-            options.HealthCheckPort = 8080;
-        })
+        settings: settings)
     .BuildServiceProvider();
 ```
 
-### 3. Start the Consumer
+### 4. Start the Consumer
 
 ```csharp
 var consumer = serviceProvider.GetRequiredService<KeyedConsumer<Order>>();
@@ -81,10 +89,12 @@ healthServer.Start();
 await consumer.StartConsumerAsync();
 ```
 
-## Configuration Options
+## Configuration Settings
+
+The `KafkaConsumerSettings` class contains all configuration options:
 
 ```csharp
-public class KafkaConsumerOptions
+public class KafkaConsumerSettings
 {
     public string BootstrapServers { get; set; } = "localhost:9092";
     public string GroupId { get; set; } = string.Empty;
@@ -104,20 +114,22 @@ public class KafkaConsumerOptions
 Instead of implementing `IMessageProcessor<T>`, you can provide a custom processing function:
 
 ```csharp
+var settings = new KafkaConsumerSettings
+{
+    BootstrapServers = "localhost:9092",
+    GroupId = "my-group",
+    Topic = "my-topic"
+};
+
 services.AddKafkaKeyedConsumer<Order>(
     parser: Order.Parser,
+    settings: settings,
     messageProcessorFactory: sp => async (consumeResult) =>
     {
         // Your custom processing logic
         var logger = sp.GetRequiredService<ILogger<Program>>();
         logger.LogInformation("Processing order {OrderId}",
             consumeResult.Message.Value.OrderId);
-    },
-    configureOptions: options =>
-    {
-        options.BootstrapServers = "localhost:9092";
-        options.GroupId = "my-group";
-        options.Topic = "my-topic";
     });
 ```
 

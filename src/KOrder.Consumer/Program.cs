@@ -16,6 +16,16 @@ public class Program
         int healthPort = int.TryParse(Environment.GetEnvironmentVariable("HEALTH_CHECK_PORT"), out int port) ? port : 8080;
         long maxLag = long.TryParse(Environment.GetEnvironmentVariable("MAX_ACCEPTABLE_LAG"), out long lag) ? lag : 10000;
 
+        // Create Kafka consumer settings
+        KafkaConsumerSettings settings = new()
+        {
+            BootstrapServers = bootstrapServers,
+            GroupId = groupId,
+            Topic = topic,
+            MaxAcceptableLag = maxLag,
+            HealthCheckPort = healthPort
+        };
+
         // Set up DI container with the Kafka consumer engine
         ServiceProvider serviceProvider = new ServiceCollection()
             .AddLogging(builder =>
@@ -28,17 +38,10 @@ public class Program
             })
             // Register the message processor
             .AddSingleton<IMessageProcessor<Order>, OrderMessageProcessor>()
-            // Register the Kafka consumer with configuration
+            // Register the Kafka consumer with settings
             .AddKafkaKeyedConsumer<Order>(
                 parser: Order.Parser,
-                configureOptions: options =>
-                {
-                    options.BootstrapServers = bootstrapServers;
-                    options.GroupId = groupId;
-                    options.Topic = topic;
-                    options.MaxAcceptableLag = maxLag;
-                    options.HealthCheckPort = healthPort;
-                })
+                settings: settings)
             .BuildServiceProvider();
 
         // Get services from DI container

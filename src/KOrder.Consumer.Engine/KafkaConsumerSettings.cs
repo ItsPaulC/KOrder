@@ -1,9 +1,9 @@
 namespace KOrder.Consumer.Engine;
 
 /// <summary>
-/// Configuration options for the Kafka keyed consumer
+/// Configuration settings for the Kafka keyed consumer
 /// </summary>
-public class KafkaConsumerOptions
+public class KafkaConsumerSettings
 {
     /// <summary>
     /// Kafka bootstrap servers (e.g., "localhost:9092")
