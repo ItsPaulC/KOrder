@@ -1,4 +1,5 @@
-﻿using KOrder;
+﻿using dotenv.net;
+using KOrder;
 using KOrder.Consumer.Engine;
 using KOrder.Consumer.Engine.HealthMonitoring;
 using KThread.Consumer;
@@ -9,6 +10,9 @@ public class Program
 {
     public static async Task Main(string[] args)
     {
+        // Load environment variables from .env file
+        DotEnv.Load();
+
         // Configuration from environment variables
         string bootstrapServers = Environment.GetEnvironmentVariable("KAFKA_BOOTSTRAP_SERVERS") ?? "localhost:9092";
         string groupId = Environment.GetEnvironmentVariable("KAFKA_GROUP_ID") ?? "my-keyed-consumer-group";
