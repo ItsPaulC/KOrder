@@ -18,17 +18,20 @@ public static class ServiceCollectionExtensions
     /// <param name="services">The service collection</param>
     /// <param name="parser">Protobuf message parser</param>
     /// <param name="settings">Consumer configuration settings</param>
+    /// <param name="consumerLogger">Logger for the consumer</param>
+    /// <param name="healthLogger">Logger for the health check server</param>
     /// <returns>The service collection for chaining</returns>
     public static IServiceCollection AddKafkaKeyedConsumer<TMessage>(
         this IServiceCollection services,
         MessageParser<TMessage> parser,
-        KafkaConsumerSettings settings)
+        KafkaConsumerSettings settings,
+        ILogger<KeyedConsumer<TMessage>> consumerLogger,
+        ILogger<HealthCheckServer> healthLogger)
         where TMessage : IMessage<TMessage>, new()
     {
         // Register the consumer as singleton
         services.AddSingleton(sp =>
         {
-            ILogger<KeyedConsumer<TMessage>> logger = sp.GetRequiredService<ILogger<KeyedConsumer<TMessage>>>();
             IMessageProcessor<TMessage> messageProcessor = sp.GetRequiredService<IMessageProcessor<TMessage>>();
 
             return new KeyedConsumer<TMessage>(
@@ -37,7 +40,7 @@ public static class ServiceCollectionExtensions
                 topic: settings.Topic,
                 parser: parser,
                 messageProcessor: messageProcessor.ProcessAsync,
-                logger: logger,
+                logger: consumerLogger,
                 maxQueuedMessages: settings.MaxQueuedMessages,
                 resumeThreshold: settings.ResumeThreshold,
                 perKeyChannelCapacity: settings.PerKeyChannelCapacity,
@@ -50,11 +53,10 @@ public static class ServiceCollectionExtensions
         services.AddSingleton(sp =>
         {
             KeyedConsumer<TMessage> consumer = sp.GetRequiredService<KeyedConsumer<TMessage>>();
-            ILogger<HealthCheckServer> logger = sp.GetRequiredService<ILogger<HealthCheckServer>>();
 
             return new HealthCheckServer(
                 consumer.HealthMonitor,
-                logger,
+                healthLogger,
                 settings.HealthCheckPort);
         });
 
@@ -68,19 +70,22 @@ public static class ServiceCollectionExtensions
     /// <param name="services">The service collection</param>
     /// <param name="parser">Protobuf message parser</param>
     /// <param name="settings">Consumer configuration settings</param>
+    /// <param name="consumerLogger">Logger for the consumer</param>
+    /// <param name="healthLogger">Logger for the health check server</param>
     /// <param name="messageProcessorFactory">Factory function to create the message processor</param>
     /// <returns>The service collection for chaining</returns>
     public static IServiceCollection AddKafkaKeyedConsumer<TMessage>(
         this IServiceCollection services,
         MessageParser<TMessage> parser,
         KafkaConsumerSettings settings,
+        ILogger<KeyedConsumer<TMessage>> consumerLogger,
+        ILogger<HealthCheckServer> healthLogger,
         Func<IServiceProvider, Func<ConsumeResult<string, TMessage>, Task>> messageProcessorFactory)
         where TMessage : IMessage<TMessage>, new()
     {
         // Register the consumer as singleton
         services.AddSingleton(sp =>
         {
-            ILogger<KeyedConsumer<TMessage>> logger = sp.GetRequiredService<ILogger<KeyedConsumer<TMessage>>>();
             Func<ConsumeResult<string, TMessage>, Task> messageProcessor = messageProcessorFactory(sp);
 
             return new KeyedConsumer<TMessage>(
@@ -89,7 +94,7 @@ public static class ServiceCollectionExtensions
                 topic: settings.Topic,
                 parser: parser,
                 messageProcessor: messageProcessor,
-                logger: logger,
+                logger: consumerLogger,
                 maxQueuedMessages: settings.MaxQueuedMessages,
                 resumeThreshold: settings.ResumeThreshold,
                 perKeyChannelCapacity: settings.PerKeyChannelCapacity,
@@ -102,11 +107,10 @@ public static class ServiceCollectionExtensions
         services.AddSingleton(sp =>
         {
             KeyedConsumer<TMessage> consumer = sp.GetRequiredService<KeyedConsumer<TMessage>>();
-            ILogger<HealthCheckServer> logger = sp.GetRequiredService<ILogger<HealthCheckServer>>();
 
             return new HealthCheckServer(
                 consumer.HealthMonitor,
-                logger,
+                healthLogger,
                 settings.HealthCheckPort);
         });
 

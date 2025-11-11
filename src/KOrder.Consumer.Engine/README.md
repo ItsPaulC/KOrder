@@ -63,23 +63,40 @@ var settings = new KafkaConsumerSettings
 };
 ```
 
-### 3. Register Services
+### 3. Create Loggers
+
+Set up logging and create the required loggers:
+
+```csharp
+var loggerFactory = LoggerFactory.Create(builder =>
+{
+    builder.AddConsole();
+    builder.SetMinimumLevel(LogLevel.Information);
+});
+
+var consumerLogger = loggerFactory.CreateLogger<KeyedConsumer<Order>>();
+var healthLogger = loggerFactory.CreateLogger<HealthCheckServer>();
+```
+
+### 4. Register Services
 
 In your `Program.cs` or startup configuration:
 
 ```csharp
 var services = new ServiceCollection()
-    .AddLogging(builder => builder.AddConsole())
+    .AddSingleton(loggerFactory)
     // Register your message processor
     .AddSingleton<IMessageProcessor<Order>, OrderMessageProcessor>()
-    // Register the Kafka consumer with settings
+    // Register the Kafka consumer with settings and loggers
     .AddKafkaKeyedConsumer<Order>(
         parser: Order.Parser,
-        settings: settings)
+        settings: settings,
+        consumerLogger: consumerLogger,
+        healthLogger: healthLogger)
     .BuildServiceProvider();
 ```
 
-### 4. Start the Consumer
+### 5. Start the Consumer
 
 ```csharp
 var consumer = serviceProvider.GetRequiredService<KeyedConsumer<Order>>();
@@ -121,9 +138,15 @@ var settings = new KafkaConsumerSettings
     Topic = "my-topic"
 };
 
+var loggerFactory = LoggerFactory.Create(builder => builder.AddConsole());
+var consumerLogger = loggerFactory.CreateLogger<KeyedConsumer<Order>>();
+var healthLogger = loggerFactory.CreateLogger<HealthCheckServer>();
+
 services.AddKafkaKeyedConsumer<Order>(
     parser: Order.Parser,
     settings: settings,
+    consumerLogger: consumerLogger,
+    healthLogger: healthLogger,
     messageProcessorFactory: sp => async (consumeResult) =>
     {
         // Your custom processing logic

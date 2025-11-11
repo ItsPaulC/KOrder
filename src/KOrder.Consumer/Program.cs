@@ -26,22 +26,30 @@ public class Program
             HealthCheckPort = healthPort
         };
 
+        // Set up logging to create loggers
+        ILoggerFactory loggerFactory = LoggerFactory.Create(builder =>
+        {
+            builder.AddConsole();
+            builder.SetMinimumLevel(LogLevel.Information);
+
+            // Can be configured via environment variable: DOTNET_LogLevel__Default=Debug
+            // Or via appsettings.json in production
+        });
+
+        ILogger<KeyedConsumer<Order>> consumerLogger = loggerFactory.CreateLogger<KeyedConsumer<Order>>();
+        ILogger<HealthCheckServer> healthLogger = loggerFactory.CreateLogger<HealthCheckServer>();
+
         // Set up DI container with the Kafka consumer engine
         ServiceProvider serviceProvider = new ServiceCollection()
-            .AddLogging(builder =>
-            {
-                builder.AddConsole();
-                builder.SetMinimumLevel(LogLevel.Information);
-
-                // Can be configured via environment variable: DOTNET_LogLevel__Default=Debug
-                // Or via appsettings.json in production
-            })
+            .AddSingleton(loggerFactory)
             // Register the message processor
             .AddSingleton<IMessageProcessor<Order>, OrderMessageProcessor>()
-            // Register the Kafka consumer with settings
+            // Register the Kafka consumer with settings and loggers
             .AddKafkaKeyedConsumer<Order>(
                 parser: Order.Parser,
-                settings: settings)
+                settings: settings,
+                consumerLogger: consumerLogger,
+                healthLogger: healthLogger)
             .BuildServiceProvider();
 
         // Get services from DI container
