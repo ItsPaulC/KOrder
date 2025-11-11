@@ -1,0 +1,191 @@
+● Let me trace through exactly how the pieces fit together:
+
+  How OrderMessageProcessor Gets Wired Up
+
+  1. Registration in Program.cs
+
+  // Line 30: Register the message processor implementation
+  .AddSingleton<IMessageProcessor<Order>, OrderMessageProcessor>()
+
+  // Line 32: Register the Kafka consumer
+  .AddKafkaKeyedConsumer<Order>(
+      parser: Order.Parser,
+      configureOptions: options => { ... })
+
+  2. Inside ServiceCollectionExtensions.AddKafkaKeyedConsumer()
+
+  Let me show you what happens in src/KOrder.Consumer.Engine/ServiceCollectionExtensions.cs:
+
+● Read(src\KOrder.Consumer.Engine\ServiceCollectionExtensions.cs)
+  ⎿  Read 25 lines
+
+● Key line 38: Retrieves your OrderMessageProcessor from DIKey line 45: Passes messageProcessor.ProcessAsync as a delegate to KeyedConsumer
+
+  3. When Messages Arrive
+
+● Read(src\KOrder.Consumer.Engine\KeyedConsumer.cs)
+  ⎿  Read 10 lines
+
+● Line 219: Your OrderMessageProcessor.ProcessAsync() gets called here for each message!
+
+  How Lag Detection Works
+
+● Read(src\KOrder.Consumer.Engine\KeyedConsumer.cs)
+  ⎿  Read 20 lines
+
+● Read(src\KOrder.Consumer.Engine\KeyedConsumer.cs)
+  ⎿  Read 8 lines
+
+● When the consumer starts, three background tasks are launched:
+
+  1. Line 109: CleanupIdleKeysAsync() - Garbage collection for idle keys
+  2. Line 112: LogStatusPeriodicallyAsync() - Periodic status logging
+  3. Line 118: MonitorLagAsync() - Lag detection (if enabled)
+
+  Lag Detection Detail
+
+● Read(src\KOrder.Consumer.Engine\KeyedConsumer.cs)
+  ⎿  Read 50 lines
+
+● How it works:
+  - Line 373: Gets where we've committed (current position)
+  - Line 380: Gets where Kafka is at (latest available offset)
+  - Line 384: Calculates lag = highWaterMark - committedOffset
+  - Line 387: Records lag in _healthMonitor
+  - Line 396: Checks if consumer is healthy based on lag patterns
+
+  The health monitor detects two unhealthy conditions:
+  1. Lag exceeds MaxAcceptableLag (default 10,000)
+  2. Lag is consistently increasing (consumer stuck)
+
+  How Health Checks Connect to Kubernetes
+
+● Read(src\KOrder.Consumer.Engine\ServiceCollectionExtensions.cs)
+  ⎿  Read 15 lines
+
+● Line 63: The HealthCheckServer gets a reference to the same HealthMonitor instance from the consumer
+
+  So when K8s hits /health/ready, it calls _healthMonitor.CheckHealth() which returns the lag status.
+
+  Idle Key Cleanup (Resource Management)
+
+● Read(src\KOrder.Consumer.Engine\KeyedConsumer.cs)
+  ⎿  Read 45 lines
+
+● How idle key cleanup works:
+  - Line 278: Runs every 1 minute
+  - Line 285: Checks if key hasn't been used in 5 minutes (_idleTimeout)
+  - Line 296: Marks the channel as complete (no more writes)
+  - Line 301: Removes channel from dictionary
+  - Line 306: Waits for the processing task to finish
+  - Line 309: Removes from activity tracking
+
+  When is Activity Tracked?
+
+● Read(src\KOrder.Consumer.Engine\KeyedConsumer.cs)
+  ⎿  Read 10 lines
+
+● Read(src\KOrder.Consumer.Engine\KeyedConsumer.cs)
+  ⎿  Read 6 lines
+
+● Line 151: Every time a message arrives for a key, the activity time is updated
+
+  Complete Flow Diagram
+
+  ┌─────────────────────────────────────────────────────────────┐
+  │  Program.cs (Your Consumer App)                             │
+  ├─────────────────────────────────────────────────────────────┤
+  │  1. Register IMessageProcessor<Order> → OrderMessageProcessor
+  │  2. Call AddKafkaKeyedConsumer<Order>()                     │
+  │  3. Start consumer + health server                          │
+  └──────────────────┬──────────────────────────────────────────┘
+                     │
+                     ▼
+  ┌─────────────────────────────────────────────────────────────┐
+  │  ServiceCollectionExtensions (Engine DI Setup)              │
+  ├─────────────────────────────────────────────────────────────┤
+  │  1. Get IMessageProcessor<Order> from DI                    │
+  │  2. Create KeyedConsumer with messageProcessor.ProcessAsync │
+  │  3. Create HealthCheckServer with consumer.HealthMonitor    │
+  └──────────────────┬──────────────────────────────────────────┘
+                     │
+                     ▼
+  ┌─────────────────────────────────────────────────────────────┐
+  │  KeyedConsumer.StartConsumerAsync() - Launches:             │
+  ├─────────────────────────────────────────────────────────────┤
+  │                                                              │
+  │  ┌────────────────────────────────────────────────┐         │
+  │  │ Background Task 1: MonitorLagAsync()           │         │
+  │  │ - Every 10s (configurable)                     │         │
+  │  │ - Queries Kafka for partition lag              │         │
+  │  │ - Records in _healthMonitor.RecordLag()        │         │
+  │  │ - Logs warning if unhealthy                    │         │
+  │  └────────────────────────────────────────────────┘         │
+  │                                                              │
+  │  ┌────────────────────────────────────────────────┐         │
+  │  │ Background Task 2: CleanupIdleKeysAsync()      │         │
+  │  │ - Every 1 minute                               │         │
+  │  │ - Finds keys idle > 5 minutes                  │         │
+  │  │ - Completes channel, waits for task to finish  │         │
+  │  │ - Removes from all dictionaries                │         │
+  │  └────────────────────────────────────────────────┘         │
+  │                                                              │
+  │  ┌────────────────────────────────────────────────┐         │
+  │  │ Main Consumer Loop                             │         │
+  │  │ - Consume message from Kafka                   │         │
+  │  │ - Update _lastActivityTime[key]                │         │
+  │  │ - Route to per-key channel                     │         │
+  │  │ - Spawn ProcessMessagesForKeyAsync(key) task   │         │
+  │  └────────────────────────────────────────────────┘         │
+  │                                                              │
+  │  ┌────────────────────────────────────────────────┐         │
+  │  │ Per-Key Processing Tasks                       │         │
+  │  │ - await _messageProcessor(message) ◄───────────┼─────┐   │
+  │  │   (calls OrderMessageProcessor.ProcessAsync)   │     │   │
+  │  │ - Commit offset on success                     │     │   │
+  │  │ - Retry 3x on failure                          │     │   │
+  │  └────────────────────────────────────────────────┘     │   │
+  └──────────────────────────────────────────────────────────│───┘
+                                                             │
+                                                             │
+  ┌──────────────────────────────────────────────────────────┼───┐
+  │  OrderMessageProcessor.ProcessAsync()                    │   │
+  ├──────────────────────────────────────────────────────────┘   │
+  │  - Extract Order from consumeResult.Message.Value            │
+  │  - Log the processing                                        │
+  │  - Simulate work (Task.Delay)                                │
+  │  - Your custom business logic goes here                      │
+  └──────────────────────────────────────────────────────────────┘
+
+  ┌─────────────────────────────────────────────────────────────┐
+  │  HealthCheckServer (HTTP Server for K8s)                    │
+  ├─────────────────────────────────────────────────────────────┤
+  │  GET /health/ready → calls _healthMonitor.CheckHealth()     │
+  │    - Returns 200 if healthy                                 │
+  │    - Returns 503 if lag too high or consistently increasing │
+  │                                                              │
+  │  GET /metrics → returns Prometheus metrics                  │
+  │    - kafka_consumer_lag per partition                       │
+  │    - kafka_consumer_healthy (0 or 1)                        │
+  └─────────────────────────────────────────────────────────────┘
+
+  Summary
+
+  Yes, OrderMessageProcessor gets used! Here's the chain:
+
+  1. Registration: Program.cs registers OrderMessageProcessor as IMessageProcessor<Order>
+  2. Resolution: ServiceCollectionExtensions retrieves it from DI
+  3. Wiring: Passes messageProcessor.ProcessAsync delegate to KeyedConsumer
+  4. Execution: For each message, KeyedConsumer calls this delegate at src/KOrder.Consumer.Engine/KeyedConsumer.cs:219
+
+  Lag Detection:
+  - Separate background task runs every 10 seconds
+  - Queries Kafka for committed offset vs high water mark
+  - Records lag in ConsumerHealthMonitor
+  - Health monitor is shared with HealthCheckServer for K8s probes
+
+  Resource Cleanup:
+  - Activity time updated on every message arrival
+  - Background task checks every minute for idle keys (>5 min)
+  - Gracefully completes channels and waits for tasks to finish
+  - Prevents memory leaks from abandoned keys
