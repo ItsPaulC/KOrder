@@ -1,8 +1,12 @@
 ﻿<Solution>
   <Folder Name="/.SolutionItems/">
     <File Path=".SolutionItems\docker-compose.yml" />
+    <File Path=".SolutionItems\HEALTH_MONITORING.md" />
   </Folder>
-  <Project Path="KOrder.Api\KOrder.Api.csproj" Type="Classic C#" />
-  <Project Path="KOrder.Consumer\KOrder.Consumer.csproj" Type="Classic C#" />
-  <Project Path="KOrder.Producer\KOrder.Producer.csproj" Type="Classic C#" />
+  <Folder Name="/src/">
+    <Project Path="src\KOrder.Api\KOrder.Api.csproj" Type="Classic C#" />
+    <Project Path="src\KOrder.Consumer\KOrder.Consumer.csproj" Type="Classic C#" />
+    <Project Path="src\KOrder.Producer\KOrder.Producer.csproj" Type="Classic C#" />
+  </Folder>
+  <Folder Name="/tests/" />
 </Solution>

@@ -16,10 +16,13 @@
         <PrivateAssets>all</PrivateAssets>
       </PackageReference>
       <PackageReference Include="librdkafka.redist" Version="2.11.0" />
+      <PackageReference Include="Microsoft.Extensions.Logging" Version="9.0.0" />
+      <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="9.0.0" />
+      <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="9.0.0" />
     </ItemGroup>
 
     <ItemGroup>
-        <Protobuf Include="..\Protos\order.proto" GrpcServices="None" />
+        <Protobuf Include="..\..\Protos\order.proto" GrpcServices="None" />
     </ItemGroup>
 
 </Project>

@@ -1,8 +1,35 @@
 {
   "permissions": {
     "allow": [
+      "Bash(dotnet sln:*)",
+      "Bash(dotnet test:*)",
+      "Bash(dotnet add:*)",
+      "Bash(dotnet build:*)",
       "Bash(git add:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(dotnet workload:*)",
+      "Bash(dotnet new:*)",
+      "Bash(dotnet remove:*)",
+      "Bash(dotnet format:*)",
+      "Bash(dotnet restore:*)",
+      "Bash(git log:*)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:www.nuget.org)",
+      "Bash(del:*)",
+      "Bash(mkdir:*)",
+      "Bash(move KOrder.Api srcKOrder.Api)",
+      "Bash(mv:*)",
+      "Bash(lsof:*)",
+      "Bash(cp:*)",
+      "Bash(rm:*)",
+      "Bash(docker logs:*)",
+      "Bash(docker-compose down:*)",
+      "Bash(docker-compose up:*)",
+      "Bash(docker exec:*)",
+      "Bash(dotnet run:*)",
+      "Bash(tree:*)"
     ],
     "deny": [],
     "ask": []
