@@ -27,15 +27,15 @@ public class Program
             GroupId = groupId,
             Topic = topic,
             MaxAcceptableLag = maxLag,
-            HealthCheckPort = healthPort
+            HealthCheckPort = healthPort,
+            EnableHealthMonitoring = false  // Set to false for local development to avoid HTTP listener permissions
         };
 
-        // Set up logging to create loggers
+        // Create logger factory to get loggers for the consumer
         ILoggerFactory loggerFactory = LoggerFactory.Create(builder =>
         {
             builder.AddConsole();
             builder.SetMinimumLevel(LogLevel.Information);
-
             // Can be configured via environment variable: DOTNET_LogLevel__Default=Debug
             // Or via appsettings.json in production
         });
@@ -45,7 +45,12 @@ public class Program
 
         // Set up DI container with the Kafka consumer engine
         ServiceProvider serviceProvider = new ServiceCollection()
-            .AddSingleton(loggerFactory)
+            // Add logging services - this enables ILogger<T> resolution for OrderMessageProcessor
+            .AddLogging(builder =>
+            {
+                builder.AddConsole();
+                builder.SetMinimumLevel(LogLevel.Information);
+            })
             // Register the message processor
             .AddSingleton<IMessageProcessor<Order>, OrderMessageProcessor>()
             // Register the Kafka consumer with settings and loggers
@@ -58,10 +63,14 @@ public class Program
 
         // Get services from DI container
         var consumer = serviceProvider.GetRequiredService<KeyedConsumer<Order>>();
-        var healthServer = serviceProvider.GetRequiredService<HealthCheckServer>();
 
-        // Start health check server for K8s probes
-        healthServer.Start();
+        // Start health check server only if health monitoring is enabled
+        HealthCheckServer? healthServer = null;
+        if (settings.EnableHealthMonitoring)
+        {
+            healthServer = serviceProvider.GetRequiredService<HealthCheckServer>();
+            healthServer.Start();
+        }
 
         // Start the consumer
         await consumer.StartConsumerAsync();
@@ -71,6 +80,6 @@ public class Program
 
         // Cleanup
         consumer.StopConsumer();
-        healthServer.Dispose();
+        healthServer?.Dispose();
     }
 }

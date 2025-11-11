@@ -22,7 +22,7 @@ public class OrderMessageProcessor : IMessageProcessor<Order>
         Order order = consumeResult.Message.Value;
         string key = consumeResult.Message.Key;
 
-        _logger.LogDebug("Processing message for Key={Key}, Status={Status}, Partition={Partition}, Offset={Offset}",
+        _logger.LogInformation("Processing message for Key={Key}, Status={Status}, Partition={Partition}, Offset={Offset}",
             key, order.Status, consumeResult.Partition.Value, consumeResult.Offset.Value);
 
         // Simulate some work - this ensures messages are processed one at a time per key
