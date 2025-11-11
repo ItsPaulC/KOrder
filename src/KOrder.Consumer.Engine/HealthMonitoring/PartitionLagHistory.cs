@@ -1,4 +1,4 @@
-namespace KThread.Consumer.HealthMonitoring;
+namespace KOrder.Consumer.Engine.HealthMonitoring;
 
 /// <summary>
 /// Tracks lag history for a single partition
@@ -55,6 +55,6 @@ internal class PartitionLagHistory(int maxHistorySize)
 
         return consecutiveIncreases;
     }
-    
+
     public long CurrentLag { get; private set; }
 }

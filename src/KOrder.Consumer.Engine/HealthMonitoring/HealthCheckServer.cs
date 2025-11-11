@@ -3,7 +3,7 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 
-namespace KThread.Consumer.HealthMonitoring;
+namespace KOrder.Consumer.Engine.HealthMonitoring;
 
 /// <summary>
 /// Lightweight HTTP server for K8s health checks (liveness and readiness probes).
@@ -43,7 +43,7 @@ public class HealthCheckServer : IDisposable
         {
             try
             {
-                var context = await _listener.GetContextAsync();
+                HttpListenerContext context = await _listener.GetContextAsync();
                 _ = Task.Run(() => ProcessRequest(context), cancellationToken);
             }
             catch (HttpListenerException) when (cancellationToken.IsCancellationRequested)
@@ -62,8 +62,8 @@ public class HealthCheckServer : IDisposable
     {
         try
         {
-            var request = context.Request;
-            var response = context.Response;
+            HttpListenerRequest request = context.Request;
+            HttpListenerResponse response = context.Response;
 
             // Route requests
             switch (request.Url?.AbsolutePath)
@@ -114,13 +114,13 @@ public class HealthCheckServer : IDisposable
     /// </summary>
     private void HandleReadinessProbe(HttpListenerResponse response)
     {
-        var healthStatus = _healthMonitor.CheckHealth();
+        HealthStatus healthStatus = _healthMonitor.CheckHealth();
 
         if (healthStatus.IsHealthy)
         {
             // Consumer is healthy - ready to receive traffic
             response.StatusCode = 200;
-            var responseBytes = Encoding.UTF8.GetBytes("Ready");
+            byte[] responseBytes = Encoding.UTF8.GetBytes("Ready");
             response.OutputStream.Write(responseBytes, 0, responseBytes.Length);
         }
         else
@@ -134,7 +134,7 @@ public class HealthCheckServer : IDisposable
                 partitionLags = healthStatus.PartitionLags,
                 timestamp = healthStatus.LastCheckTime
             };
-            var jsonBytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(responseBody));
+            byte[] jsonBytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(responseBody));
             response.ContentType = "application/json";
             response.OutputStream.Write(jsonBytes, 0, jsonBytes.Length);
 
@@ -151,11 +151,11 @@ public class HealthCheckServer : IDisposable
         long totalLag = _healthMonitor.GetTotalLag();
 
         // Prometheus format
-        StringBuilder metrics = new StringBuilder();
+        StringBuilder metrics = new();
         metrics.AppendLine("# HELP kafka_consumer_lag Current lag per partition");
         metrics.AppendLine("# TYPE kafka_consumer_lag gauge");
 
-        foreach (var kvp in healthStatus.PartitionLags)
+        foreach (KeyValuePair<int, long> kvp in healthStatus.PartitionLags)
         {
             metrics.AppendLine($"kafka_consumer_lag{{partition=\"{kvp.Key}\"}} {kvp.Value}");
         }

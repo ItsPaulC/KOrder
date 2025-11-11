@@ -1,7 +1,7 @@
 using System.Collections.Concurrent;
 using Confluent.Kafka;
 
-namespace KThread.Consumer.HealthMonitoring;
+namespace KOrder.Consumer.Engine.HealthMonitoring;
 
 /// <summary>
 /// Monitors consumer health by tracking lag and detecting stuck consumers
@@ -31,7 +31,7 @@ public class ConsumerHealthMonitor
     /// </summary>
     public void RecordLag(TopicPartition partition, long currentLag)
     {
-        var history = _lagHistory.GetOrAdd(partition, _ => new PartitionLagHistory(_lagCheckWindowSize));
+        PartitionLagHistory history = _lagHistory.GetOrAdd(partition, _ => new PartitionLagHistory(_lagCheckWindowSize));
         history.AddLag(currentLag);
     }
 
@@ -42,7 +42,7 @@ public class ConsumerHealthMonitor
     {
         _lastHealthCheck = DateTime.UtcNow;
 
-        foreach (var kvp in _lagHistory)
+        foreach (KeyValuePair<TopicPartition, PartitionLagHistory> kvp in _lagHistory)
         {
             TopicPartition partition = kvp.Key;
             PartitionLagHistory history = kvp.Value;
@@ -86,7 +86,7 @@ public class ConsumerHealthMonitor
             LastCheckTime = _lastHealthCheck
         };
     }
-    
+
     /// <summary>
     /// Gets total lag across all partitions
     /// </summary>
@@ -105,7 +105,7 @@ public class ConsumerHealthMonitor
             kvp => kvp.Value.CurrentLag
         );
     }
-    
+
     public bool IsHealthy => _isHealthy;
     public string UnhealthyReason => _unhealthyReason;
     public DateTime LastHealthCheck => _lastHealthCheck;

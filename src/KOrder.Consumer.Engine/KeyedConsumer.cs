@@ -1,25 +1,30 @@
-﻿using System.Collections.Concurrent;
+using System.Collections.Concurrent;
 using System.Threading.Channels;
 using Confluent.Kafka;
-using KOrder;
-using KThread.Consumer.HealthMonitoring;
+using Google.Protobuf;
+using KOrder.Consumer.Engine.HealthMonitoring;
 using Microsoft.Extensions.Logging;
 
-namespace KThread.Consumer;
+namespace KOrder.Consumer.Engine;
 
-public class KeyedConsumer
+/// <summary>
+/// Kafka consumer that guarantees message ordering per key while processing different keys in parallel
+/// </summary>
+/// <typeparam name="TMessage">Protobuf message type</typeparam>
+public class KeyedConsumer<TMessage> where TMessage : IMessage<TMessage>, new()
 {
     private readonly string _bootstrapServers;
     private readonly string _groupId;
     private readonly string _topic;
     private readonly ConcurrentDictionary<string, Task> _processingTasks = new();
-    private readonly ConcurrentDictionary<string, ChannelWriter<ConsumeResult<string, Order>>> _messageChannels = new();
-    private readonly ConcurrentDictionary<string, Channel<ConsumeResult<string, Order>>> _channels = new();
+    private readonly ConcurrentDictionary<string, ChannelWriter<ConsumeResult<string, TMessage>>> _messageChannels = new();
+    private readonly ConcurrentDictionary<string, Channel<ConsumeResult<string, TMessage>>> _channels = new();
     private readonly ConcurrentDictionary<string, DateTime> _lastActivityTime = new();
     private readonly CancellationTokenSource _cts = new();
     private readonly TimeSpan _idleTimeout = TimeSpan.FromMinutes(5);
-    private IConsumer<string, Order>? _consumer;
-    private readonly Func<ConsumeResult<string, Order>, Task>? _messageProcessor;
+    private IConsumer<string, TMessage>? _consumer;
+    private readonly Func<ConsumeResult<string, TMessage>, Task> _messageProcessor;
+    private readonly MessageParser<TMessage> _parser;
 
     // Pause/Resume configuration (global backpressure)
     private readonly int _maxQueuedMessages;
@@ -36,7 +41,7 @@ public class KeyedConsumer
     private readonly TimeSpan _lagCheckInterval;
 
     // Logging
-    private readonly ILogger<KeyedConsumer> _logger;
+    private readonly ILogger<KeyedConsumer<TMessage>> _logger;
 
     public ConsumerHealthMonitor HealthMonitor => _healthMonitor;
 
@@ -44,8 +49,9 @@ public class KeyedConsumer
         string bootstrapServers,
         string groupId,
         string topic,
-        ILogger<KeyedConsumer> logger,
-        Func<ConsumeResult<string, Order>, Task>? messageProcessor = null,
+        MessageParser<TMessage> parser,
+        Func<ConsumeResult<string, TMessage>, Task> messageProcessor,
+        ILogger<KeyedConsumer<TMessage>> logger,
         int maxQueuedMessages = 10000,
         int resumeThreshold = 5000,
         int perKeyChannelCapacity = 1000,
@@ -56,8 +62,9 @@ public class KeyedConsumer
         _bootstrapServers = bootstrapServers;
         _groupId = groupId;
         _topic = topic;
-        _logger = logger;
+        _parser = parser;
         _messageProcessor = messageProcessor;
+        _logger = logger;
         _maxQueuedMessages = maxQueuedMessages;
         _resumeThreshold = resumeThreshold;
         _perKeyChannelCapacity = perKeyChannelCapacity;
@@ -84,8 +91,8 @@ public class KeyedConsumer
                 MaxPollIntervalMs = 300000
             };
 
-            _consumer = new ConsumerBuilder<string, Order>(config)
-                .SetValueDeserializer(new ProtobufDeserializer<Order>(Order.Parser))
+            _consumer = new ConsumerBuilder<string, TMessage>(config)
+                .SetValueDeserializer(new ProtobufDeserializer<TMessage>(_parser))
                 .Build();
             _consumer.Subscribe(_topic);
 
@@ -115,7 +122,7 @@ public class KeyedConsumer
             {
                 while (!_cts.Token.IsCancellationRequested)
                 {
-                    ConsumeResult<string, Order>? consumeResult = _consumer.Consume(_cts.Token);
+                    ConsumeResult<string, TMessage>? consumeResult = _consumer.Consume(_cts.Token);
 
                     if (consumeResult?.Message != null)
                     {
@@ -123,9 +130,9 @@ public class KeyedConsumer
                         if (!string.IsNullOrEmpty(key))
                         {
                             // Get or create channel for this key
-                            if (!_messageChannels.TryGetValue(key, out ChannelWriter<ConsumeResult<string, Order>>? channelWriter))
+                            if (!_messageChannels.TryGetValue(key, out ChannelWriter<ConsumeResult<string, TMessage>>? channelWriter))
                             {
-                                Channel<ConsumeResult<string, Order>> channel = Channel.CreateBounded<ConsumeResult<string, Order>>(new BoundedChannelOptions(_perKeyChannelCapacity)
+                                Channel<ConsumeResult<string, TMessage>> channel = Channel.CreateBounded<ConsumeResult<string, TMessage>>(new BoundedChannelOptions(_perKeyChannelCapacity)
                                 {
                                     SingleReader = true,
                                     SingleWriter = false,
@@ -173,7 +180,7 @@ public class KeyedConsumer
             finally
             {
                 // Signal all channels to complete
-                foreach (ChannelWriter<ConsumeResult<string, Order>> channel in _messageChannels.Values)
+                foreach (ChannelWriter<ConsumeResult<string, TMessage>> channel in _messageChannels.Values)
                 {
                     channel.Complete();
                 }
@@ -191,14 +198,14 @@ public class KeyedConsumer
         });
     }
 
-    private async Task ProcessMessagesForKeyAsync(string key, ChannelReader<ConsumeResult<string, Order>> channelReader)
+    private async Task ProcessMessagesForKeyAsync(string key, ChannelReader<ConsumeResult<string, TMessage>> channelReader)
     {
         try
         {
             // Process messages until the channel is completed
-            await foreach (ConsumeResult<string, Order> message in channelReader.ReadAllAsync(_cts.Token))
+            await foreach (ConsumeResult<string, TMessage> message in channelReader.ReadAllAsync(_cts.Token))
             {
-                if (message.Message?.Value != null)
+                if (message.Message != null)
                 {
                     bool processingSucceeded = false;
                     int retryCount = 0;
@@ -208,21 +215,8 @@ public class KeyedConsumer
                     {
                         try
                         {
-                            // Use custom processor if provided, otherwise use default logic
-                            if (_messageProcessor != null)
-                            {
-                                await _messageProcessor(message);
-                            }
-                            else
-                            {
-                                // Default processing logic
-                                Order order = message.Message.Value; // Already deserialized by ProtobufDeserializer
-                                _logger.LogDebug("Processing message for Key={Key}, Status={Status}, Partition={Partition}, Offset={Offset}, Attempt={Attempt}",
-                                    key, order.Status, message.Partition.Value, message.Offset.Value, retryCount + 1);
-
-                                // Simulate some work - this ensures messages are processed one at a time per key
-                                await Task.Delay(100, _cts.Token);
-                            }
+                            // Use custom processor
+                            await _messageProcessor(message);
 
                             processingSucceeded = true;
 
@@ -284,7 +278,7 @@ public class KeyedConsumer
                 await Task.Delay(TimeSpan.FromMinutes(1), _cts.Token);
 
                 DateTime now = DateTime.UtcNow;
-                List<string> keysToRemove = new();
+                List<string> keysToRemove = [];
 
                 foreach (KeyValuePair<string, DateTime> kvp in _lastActivityTime)
                 {
@@ -297,7 +291,7 @@ public class KeyedConsumer
                 foreach (string key in keysToRemove)
                 {
                     // Mark channel as complete
-                    if (_messageChannels.TryRemove(key, out ChannelWriter<ConsumeResult<string, Order>>? channelWriter))
+                    if (_messageChannels.TryRemove(key, out ChannelWriter<ConsumeResult<string, TMessage>>? channelWriter))
                     {
                         channelWriter.Complete();
                         _logger.LogDebug("Marked idle channel for cleanup for Key={Key}", key);
@@ -327,7 +321,7 @@ public class KeyedConsumer
     private int GetTotalQueuedMessages()
     {
         int total = 0;
-        foreach (Channel<ConsumeResult<string, Order>> channel in _channels.Values)
+        foreach (Channel<ConsumeResult<string, TMessage>> channel in _channels.Values)
         {
             total += channel.Reader.Count;
         }
@@ -403,7 +397,7 @@ public class KeyedConsumer
 
                 if (!healthStatus.IsHealthy)
                 {
-                    var lagsSummary = string.Join(", ", healthStatus.PartitionLags.Select(kvp => $"P{kvp.Key}={kvp.Value}"));
+                    string lagsSummary = string.Join(", ", healthStatus.PartitionLags.Select(kvp => $"P{kvp.Key}={kvp.Value}"));
                     _logger.LogWarning("Consumer UNHEALTHY: {Reason}. Partition lags: {Lags}",
                         healthStatus.Reason, lagsSummary);
                 }
